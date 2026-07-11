@@ -1,21 +1,26 @@
-export type ProviderId = 'codex-freemodel'
+export type ProviderId = 'codex-freemodel' | 'codex-chatgpt'
 
-export interface CodexFreeModelSettings {
+export interface CodexSettings {
   model: string
   modelReasoningEffort: 'low' | 'medium' | 'high' | 'xhigh'
 }
+
+export type CodexFreeModelSettings = CodexSettings
 
 export interface Account {
   id: string
   name: string
   provider: ProviderId
   apiKey: string
-  settings: CodexFreeModelSettings
+  settings: CodexSettings
   createdAt: string
   lastUsedAt: string | null
   switchCount: number
   note?: string
   freemodelEmail?: string
+  chatgptEmail?: string
+  chatgptAccountId?: string
+  planType?: string
 }
 
 export interface FreeModelLoginStatus {
@@ -26,12 +31,20 @@ export interface FreeModelLoginStatus {
   message?: string
 }
 
+export interface ChatGptLoginStatus {
+  loggedIn: boolean
+  email?: string
+  accountId?: string
+  planType?: string
+  message?: string
+}
+
 export interface UsageEvent {
   id: string
   accountId: string
   accountName: string
   provider: ProviderId
-  action: 'switch' | 'add' | 'update' | 'delete' | 'validate'
+  action: 'switch' | 'add' | 'update' | 'delete' | 'validate' | 'login'
   timestamp: string
   success: boolean
   message?: string
@@ -59,6 +72,7 @@ export interface ActiveConfigStatus {
   codexHome: string
   configExists: boolean
   authExists: boolean
+  authMode?: 'apikey' | 'chatgpt' | 'unknown'
 }
 
 export interface ValidateKeyResult {
@@ -74,7 +88,7 @@ export interface ProviderModelOption {
 export interface ProviderOptions {
   models: ProviderModelOption[]
   reasoningEfforts: Array<{
-    value: CodexFreeModelSettings['modelReasoningEffort']
+    value: CodexSettings['modelReasoningEffort']
     label: string
   }>
 }
@@ -87,12 +101,34 @@ export interface QuotaWindow {
   remainingPercent: number
   resetsAt: number | null
   resetsInLabel: string
+  windowLabel?: string
+  windowSeconds?: number
+  resetAtLabel?: string
+  usedUnits?: number
+  limitUnits?: number
+}
+
+export interface QuotaCredits {
+  hasCredits: boolean
+  unlimited: boolean
+  balance?: string
 }
 
 export interface AccountQuota {
   available: boolean
   hasActiveLimits: boolean
   message?: string
+  displayMode?: 'cents' | 'percent'
+  planType?: string
+  email?: string
+  allowed?: boolean
+  limitReached?: boolean
+  credits?: QuotaCredits
+  stats?: {
+    totalRequests?: number
+    totalTokens?: number
+  }
+  codeReview?: QuotaWindow | null
   hourly: QuotaWindow
   weekly: QuotaWindow
   updatedAt: string
@@ -105,8 +141,8 @@ export interface Api {
   addAccount: (input: {
     name: string
     provider: ProviderId
-    apiKey: string
-    settings?: Partial<CodexFreeModelSettings>
+    apiKey?: string
+    settings?: Partial<CodexSettings>
     note?: string
   }) => Promise<Account>
   updateAccount: (
@@ -114,7 +150,7 @@ export interface Api {
     input: {
       name?: string
       apiKey?: string
-      settings?: Partial<CodexFreeModelSettings>
+      settings?: Partial<CodexSettings>
       note?: string
     }
   ) => Promise<Account>
@@ -132,6 +168,12 @@ export interface Api {
     code: string
   ) => Promise<{ success: boolean; message: string; loginStatus?: FreeModelLoginStatus }>
   logoutFreeModel: (accountId: string) => Promise<void>
+  getChatGptLoginStatus: (accountId: string) => Promise<ChatGptLoginStatus>
+  loginChatGpt: (accountId: string) => Promise<ChatGptLoginStatus>
+  importChatGptFromLive: (accountId: string) => Promise<ChatGptLoginStatus>
+  importChatGptFromFile: (accountId: string, filePath: string) => Promise<ChatGptLoginStatus>
+  logoutChatGpt: (accountId: string) => Promise<void>
+  pickAuthJsonFile: () => Promise<string | null>
   openCodexDir: () => Promise<void>
   openDocs: (provider: ProviderId) => Promise<void>
 }

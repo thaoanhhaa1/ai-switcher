@@ -18,6 +18,13 @@ const api: Api = {
   verifyFreeModelOtp: (accountId, email, code) =>
     ipcRenderer.invoke('freemodel:verifyOtp', accountId, email, code),
   logoutFreeModel: (accountId) => ipcRenderer.invoke('freemodel:logout', accountId),
+  getChatGptLoginStatus: (accountId) => ipcRenderer.invoke('chatgpt:loginStatus', accountId),
+  loginChatGpt: (accountId) => ipcRenderer.invoke('chatgpt:login', accountId),
+  importChatGptFromLive: (accountId) => ipcRenderer.invoke('chatgpt:importLive', accountId),
+  importChatGptFromFile: (accountId, filePath) =>
+    ipcRenderer.invoke('chatgpt:importFile', accountId, filePath),
+  logoutChatGpt: (accountId) => ipcRenderer.invoke('chatgpt:logout', accountId),
+  pickAuthJsonFile: () => ipcRenderer.invoke('chatgpt:pickAuthFile'),
   openCodexDir: () => ipcRenderer.invoke('codex:openDir'),
   openDocs: (provider) => ipcRenderer.invoke('docs:open', provider)
 }

@@ -3,6 +3,11 @@ import TOML from '@iarna/toml'
 import type { Account, AccountQuota, CodexFreeModelSettings, ProviderModelOption, QuotaWindow } from '../../src/types'
 import { fetchFreeModelUsageWithSession } from '../freemodel-auth'
 import { getCodexAuthPath, getCodexConfigPath, getCodexHome } from '../paths'
+import {
+  formatResetAt,
+  formatResetLabelFromTimestamp,
+  inferWindowLabel
+} from '../quota-utils'
 
 export const FREEMODEL_CODEX_DOCS = 'https://freemodel.dev/dashboard/docs#codex'
 export const FREEMODEL_BASE_URL = 'https://api.freemodel.dev'
@@ -21,27 +26,12 @@ interface FreeModelUsageResponse {
   totalTokens?: number
 }
 
-function formatResetLabel(resetsAt?: number): string {
-  if (!resetsAt) return ''
-
-  const seconds = resetsAt - Math.floor(Date.now() / 1000)
-  if (seconds <= 0) return 'Đang reset...'
-  if (seconds < 60) return `Reset sau ${seconds}s`
-  if (seconds < 3600) return `Reset sau ${Math.ceil(seconds / 60)} phút`
-
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.ceil((seconds % 3600) / 60)
-  if (seconds < 86400) return `Reset sau ${hours}h ${minutes}p`
-
-  const days = Math.floor(seconds / 86400)
-  return `Reset sau ${days} ngày`
-}
-
-function normalizeQuotaWindow(window?: FreeModelQuotaWindow): QuotaWindow {
+function normalizeQuotaWindow(window?: FreeModelQuotaWindow, fallbackLabel?: string): QuotaWindow {
   const usedCents = window?.usedCents ?? 0
   const limitCents = window?.limitCents ?? 0
   const remainingCents = Math.max(0, limitCents - usedCents)
   const usedPercent = limitCents > 0 ? Math.min(100, Math.round((usedCents / limitCents) * 100)) : 0
+  const resetsAt = window?.resetsAt ?? null
 
   return {
     usedCents,
@@ -49,8 +39,10 @@ function normalizeQuotaWindow(window?: FreeModelQuotaWindow): QuotaWindow {
     remainingCents,
     usedPercent,
     remainingPercent: limitCents > 0 ? Math.max(0, 100 - usedPercent) : 0,
-    resetsAt: window?.resetsAt ?? null,
-    resetsInLabel: formatResetLabel(window?.resetsAt)
+    resetsAt,
+    resetsInLabel: formatResetLabelFromTimestamp(resetsAt ?? undefined),
+    windowLabel: fallbackLabel,
+    resetAtLabel: resetsAt ? formatResetAt(resetsAt) : ''
   }
 }
 
@@ -67,14 +59,23 @@ function buildEmptyQuota(message?: string): AccountQuota {
 }
 
 function normalizeUsageResponse(data: FreeModelUsageResponse): AccountQuota {
-  const hourly = normalizeQuotaWindow(data.window5h)
-  const weekly = normalizeQuotaWindow(data.windowWeek)
+  const hourly = normalizeQuotaWindow(data.window5h, '5 giờ')
+  const weekly = normalizeQuotaWindow(data.windowWeek, '7 ngày')
   const hasActiveLimits = hourly.limitCents > 0 || weekly.limitCents > 0
+  const stats =
+    data.totalRequests !== undefined || data.totalTokens !== undefined
+      ? {
+          totalRequests: data.totalRequests,
+          totalTokens: data.totalTokens
+        }
+      : undefined
 
   return {
     available: true,
     hasActiveLimits,
+    displayMode: 'cents',
     message: hasActiveLimits ? undefined : 'Tài khoản Free — chưa có cửa sổ quota active',
+    stats,
     hourly,
     weekly,
     updatedAt: new Date().toISOString()

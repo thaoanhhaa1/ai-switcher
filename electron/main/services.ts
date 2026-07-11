@@ -1,16 +1,20 @@
 import { access, constants } from 'fs/promises'
-import { shell } from 'electron'
+import { dialog, shell } from 'electron'
 import { v4 as uuidv4 } from 'uuid'
 import type {
   Account,
   AccountQuota,
-  CodexFreeModelSettings,
+  ActiveConfigStatus,
+  AppData,
+  ChatGptLoginStatus,
+  CodexSettings,
   FreeModelLoginStatus,
   ProviderId,
   ProviderInfo,
   ProviderOptions
 } from '../../src/types'
 import { hashApiKey } from './crypto'
+import { readLiveAuth, isChatGptAuth, parseChatGptIdentity, saveStoredAuth } from './codex-auth-storage'
 import {
   clearFreeModelSession,
   getFreeModelLoginStatus,
@@ -27,6 +31,19 @@ import {
   readCodexAuthKey,
   validateFreeModelKey
 } from './providers/codex-freemodel'
+import {
+  applyCodexChatGptAccount,
+  clearChatGptAuth,
+  CODEX_CHATGPT_DOCS,
+  DEFAULT_CHATGPT_SETTINGS,
+  fetchChatGptQuota,
+  getChatGptLoginStatus,
+  importChatGptAuthFromFile,
+  importChatGptAuthFromLive,
+  readLiveChatGptAccountId,
+  runChatGptLogin,
+  snapshotLiveAuthToAccount
+} from './providers/codex-chatgpt'
 import { getCodexAuthPath, getCodexConfigPath, getCodexHome } from './paths'
 import { appendUsageEvent, findAccount, loadAppData, saveAppData } from './storage'
 
@@ -37,6 +54,13 @@ const PROVIDERS: ProviderInfo[] = [
     toolName: 'OpenAI Codex CLI',
     configDir: getCodexHome(),
     docsUrl: FREEMODEL_CODEX_DOCS
+  },
+  {
+    id: 'codex-chatgpt',
+    name: 'Codex + ChatGPT',
+    toolName: 'OpenAI Codex CLI',
+    configDir: getCodexHome(),
+    docsUrl: CODEX_CHATGPT_DOCS
   }
 ]
 
@@ -49,16 +73,79 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+function defaultSettings(provider: ProviderId): CodexSettings {
+  return provider === 'codex-chatgpt' ? { ...DEFAULT_CHATGPT_SETTINGS } : { ...DEFAULT_CODEX_SETTINGS }
+}
+
+async function persistChatGptIdentity(accountId: string, identity: {
+  email?: string
+  accountId?: string
+  planType?: string
+}): Promise<Account | null> {
+  const data = await loadAppData()
+  const account = findAccount(data, accountId)
+  if (!account) return null
+
+  const updated: Account = {
+    ...account,
+    chatgptEmail: identity.email ?? account.chatgptEmail,
+    chatgptAccountId: identity.accountId ?? account.chatgptAccountId,
+    planType: identity.planType ?? account.planType
+  }
+
+  const next: AppData = {
+    ...data,
+    accounts: data.accounts.map((item) => (item.id === accountId ? updated : item))
+  }
+  await saveAppData(next)
+  return updated
+}
+
+async function snapshotActiveAccountAuth(data: AppData): Promise<void> {
+  if (!data.activeAccountId) return
+
+  const active = findAccount(data, data.activeAccountId)
+  if (!active) return
+
+  if (active.provider === 'codex-chatgpt') {
+    await snapshotLiveAuthToAccount(active.id)
+    return
+  }
+
+  if (active.provider === 'codex-freemodel') {
+    // FreeModel uses API key in data.json; live auth refresh not needed for key mode.
+  }
+}
+
 export function getProviders(): ProviderInfo[] {
   return PROVIDERS
 }
 
 export async function getActiveStatus(data?: AppData): Promise<ActiveConfigStatus> {
   const appData = data ?? (await loadAppData())
-  const currentKey = await readCodexAuthKey()
   const configExists = await fileExists(getCodexConfigPath())
   const authExists = await fileExists(getCodexAuthPath())
+  const liveAuth = await readLiveAuth()
 
+  if (isChatGptAuth(liveAuth)) {
+    const liveAccountId = await readLiveChatGptAccountId()
+    const matched = appData.accounts.find(
+      (account) =>
+        account.provider === 'codex-chatgpt' && account.chatgptAccountId === liveAccountId
+    )
+
+    return {
+      provider: matched?.provider ?? 'codex-chatgpt',
+      accountId: matched?.id ?? null,
+      accountName: matched?.name ?? null,
+      codexHome: getCodexHome(),
+      configExists,
+      authExists,
+      authMode: 'chatgpt'
+    }
+  }
+
+  const currentKey = await readCodexAuthKey()
   if (!currentKey) {
     return {
       provider: null,
@@ -66,12 +153,15 @@ export async function getActiveStatus(data?: AppData): Promise<ActiveConfigStatu
       accountName: null,
       codexHome: getCodexHome(),
       configExists,
-      authExists
+      authExists,
+      authMode: authExists ? 'unknown' : undefined
     }
   }
 
   const currentHash = hashApiKey(currentKey)
-  const matched = appData.accounts.find((account) => hashApiKey(account.apiKey) === currentHash)
+  const matched = appData.accounts.find(
+    (account) => account.provider === 'codex-freemodel' && hashApiKey(account.apiKey) === currentHash
+  )
 
   return {
     provider: matched?.provider ?? 'codex-freemodel',
@@ -79,15 +169,16 @@ export async function getActiveStatus(data?: AppData): Promise<ActiveConfigStatu
     accountName: matched?.name ?? null,
     codexHome: getCodexHome(),
     configExists,
-    authExists
+    authExists,
+    authMode: 'apikey'
   }
 }
 
 export async function addAccount(input: {
   name: string
   provider: ProviderId
-  apiKey: string
-  settings?: Partial<CodexFreeModelSettings>
+  apiKey?: string
+  settings?: Partial<CodexSettings>
   note?: string
 }): Promise<{ data: AppData; account: Account }> {
   const data = await loadAppData()
@@ -95,9 +186,9 @@ export async function addAccount(input: {
     id: uuidv4(),
     name: input.name.trim(),
     provider: input.provider,
-    apiKey: input.apiKey.trim(),
+    apiKey: input.apiKey?.trim() ?? '',
     settings: {
-      ...DEFAULT_CODEX_SETTINGS,
+      ...defaultSettings(input.provider),
       ...input.settings
     },
     createdAt: new Date().toISOString(),
@@ -129,7 +220,7 @@ export async function updateAccount(
   input: {
     name?: string
     apiKey?: string
-    settings?: Partial<CodexFreeModelSettings>
+    settings?: Partial<CodexSettings>
     note?: string
   }
 ): Promise<{ data: AppData; account: Account }> {
@@ -158,7 +249,11 @@ export async function updateAccount(
   await saveAppData(next)
 
   if (data.activeAccountId === id) {
-    await applyCodexFreeModelAccount(updated)
+    if (updated.provider === 'codex-freemodel') {
+      await applyCodexFreeModelAccount(updated)
+    } else {
+      await applyCodexChatGptAccount(updated)
+    }
   }
 
   const withLog = await appendUsageEvent(next, {
@@ -187,8 +282,8 @@ export async function deleteAccount(id: string): Promise<AppData> {
   }
 
   await saveAppData(next)
-
   await clearFreeModelSession(id)
+  await clearChatGptAuth(id)
 
   return appendUsageEvent(next, {
     accountId: existing.id,
@@ -207,8 +302,12 @@ export async function switchAccount(id: string): Promise<{ data: AppData; status
     throw new Error('Không tìm thấy tài khoản')
   }
 
+  await snapshotActiveAccountAuth(data)
+
   if (account.provider === 'codex-freemodel') {
     await applyCodexFreeModelAccount(account)
+  } else {
+    await applyCodexChatGptAccount(account)
   }
 
   const updatedAccount: Account = {
@@ -246,7 +345,7 @@ export async function validateApiKey(
     return validateFreeModelKey(apiKey.trim())
   }
 
-  return { valid: false, message: 'Provider chưa được hỗ trợ' }
+  return { valid: false, message: 'ChatGPT dùng OAuth, không dùng API key' }
 }
 
 export async function getProviderOptions(
@@ -255,6 +354,22 @@ export async function getProviderOptions(
 ): Promise<ProviderOptions> {
   if (provider === 'codex-freemodel') {
     return getCodexFreeModelOptions(apiKey)
+  }
+
+  if (provider === 'codex-chatgpt') {
+    return {
+      models: [
+        { id: 'gpt-5.4', ownedBy: 'openai' },
+        { id: 'gpt-5.3-codex', ownedBy: 'openai' },
+        { id: 'gpt-5.5-codex', ownedBy: 'openai' }
+      ],
+      reasoningEfforts: [
+        { value: 'low', label: 'low' },
+        { value: 'medium', label: 'medium' },
+        { value: 'high', label: 'high' },
+        { value: 'xhigh', label: 'xhigh' }
+      ]
+    }
   }
 
   throw new Error('Provider chưa được hỗ trợ')
@@ -269,6 +384,10 @@ export async function getAccountQuota(provider: ProviderId, accountId: string): 
 
   if (provider === 'codex-freemodel') {
     return fetchFreeModelQuota(accountId, account.apiKey)
+  }
+
+  if (provider === 'codex-chatgpt') {
+    return fetchChatGptQuota(accountId)
   }
 
   throw new Error('Provider chưa được hỗ trợ')
@@ -330,6 +449,64 @@ export async function verifyAccountOtp(
 
 export async function logoutAccount(accountId: string): Promise<void> {
   await logoutFreeModel(accountId)
+}
+
+export async function getChatGptStatus(accountId: string): Promise<ChatGptLoginStatus> {
+  return getChatGptLoginStatus(accountId)
+}
+
+export async function loginChatGptAccount(accountId: string): Promise<ChatGptLoginStatus> {
+  const auth = await runChatGptLogin()
+  const identity = parseChatGptIdentity(auth)
+  await saveStoredAuth(accountId, auth)
+  await persistChatGptIdentity(accountId, identity)
+
+  const data = await loadAppData()
+  await appendUsageEvent(data, {
+    accountId,
+    accountName: findAccount(data, accountId)?.name ?? accountId,
+    provider: 'codex-chatgpt',
+    action: 'login',
+    success: true,
+    message: 'Đăng nhập ChatGPT thành công'
+  })
+
+  return getChatGptLoginStatus(accountId)
+}
+
+export async function importChatGptLiveAccount(accountId: string): Promise<ChatGptLoginStatus> {
+  const auth = await importChatGptAuthFromLive(accountId)
+  const identity = parseChatGptIdentity(auth)
+  await persistChatGptIdentity(accountId, identity)
+  return getChatGptLoginStatus(accountId)
+}
+
+export async function importChatGptFileAccount(
+  accountId: string,
+  filePath: string
+): Promise<ChatGptLoginStatus> {
+  const auth = await importChatGptAuthFromFile(accountId, filePath)
+  const identity = parseChatGptIdentity(auth)
+  await persistChatGptIdentity(accountId, identity)
+  return getChatGptLoginStatus(accountId)
+}
+
+export async function logoutChatGptAccount(accountId: string): Promise<void> {
+  await clearChatGptAuth(accountId)
+}
+
+export async function pickAuthJsonFile(): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    title: 'Chọn file auth.json',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  })
+
+  if (result.canceled || !result.filePaths.length) {
+    return null
+  }
+
+  return result.filePaths[0]
 }
 
 export async function openCodexDir(): Promise<void> {

@@ -6,12 +6,18 @@ import {
   getAccountQuota,
   getAccountsQuota,
   getAccountLoginStatus,
+  getChatGptStatus,
   getActiveStatus,
   getProviderOptions,
   getProviders,
+  importChatGptFileAccount,
+  importChatGptLiveAccount,
+  loginChatGptAccount,
   logoutAccount,
+  logoutChatGptAccount,
   openCodexDir,
   openDocs,
+  pickAuthJsonFile,
   sendAccountOtp,
   switchAccount,
   updateAccount,
@@ -71,6 +77,14 @@ function registerIpc(): void {
     verifyAccountOtp(accountId, email, code)
   )
   ipcMain.handle('freemodel:logout', (_event, accountId) => logoutAccount(accountId))
+  ipcMain.handle('chatgpt:loginStatus', (_event, accountId) => getChatGptStatus(accountId))
+  ipcMain.handle('chatgpt:login', (_event, accountId) => loginChatGptAccount(accountId))
+  ipcMain.handle('chatgpt:importLive', (_event, accountId) => importChatGptLiveAccount(accountId))
+  ipcMain.handle('chatgpt:importFile', (_event, accountId, filePath) =>
+    importChatGptFileAccount(accountId, filePath)
+  )
+  ipcMain.handle('chatgpt:logout', (_event, accountId) => logoutChatGptAccount(accountId))
+  ipcMain.handle('chatgpt:pickAuthFile', () => pickAuthJsonFile())
   ipcMain.handle('codex:openDir', () => openCodexDir())
   ipcMain.handle('docs:open', (_event, provider) => openDocs(provider))
 }
