@@ -4,7 +4,7 @@ import type { Api } from '../../src/types'
 const api: Api = {
   getProviders: () => ipcRenderer.invoke('providers:list'),
   getAppData: () => ipcRenderer.invoke('app:getData'),
-  getActiveStatus: () => ipcRenderer.invoke('app:getActiveStatus'),
+  getActiveStatuses: () => ipcRenderer.invoke('app:getActiveStatuses'),
   addAccount: (input) => ipcRenderer.invoke('account:add', input),
   updateAccount: (id, input) => ipcRenderer.invoke('account:update', id, input),
   deleteAccount: (id) => ipcRenderer.invoke('account:delete', id),

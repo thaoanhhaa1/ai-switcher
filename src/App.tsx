@@ -3,6 +3,7 @@ import type {
   Account,
   AccountQuota,
   ActiveConfigStatus,
+  ActiveStatuses,
   AntigravityLoginStatus,
   AppData,
   ChatGptLoginStatus,
@@ -62,7 +63,7 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<ProviderId | null>(null)
   const [data, setData] = useState<AppData | null>(null)
-  const [status, setStatus] = useState<ActiveConfigStatus | null>(null)
+  const [statuses, setStatuses] = useState<ActiveStatuses | null>(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -91,6 +92,8 @@ export default function App() {
     () => data?.usageLog.filter((event) => event.provider === selectedProviderId) ?? [],
     [data?.usageLog, selectedProviderId]
   )
+
+  const status = selectedProviderId ? (statuses?.[selectedProviderId] ?? null) : null
 
   async function refreshLoginStatuses(accounts: Account[]): Promise<void> {
     if (!accounts.length) {
@@ -152,14 +155,14 @@ export default function App() {
   }
 
   async function refresh(): Promise<void> {
-    const [providerList, appData, activeStatus] = await Promise.all([
+    const [providerList, appData, activeStatuses] = await Promise.all([
       window.api.getProviders(),
       window.api.getAppData(),
-      window.api.getActiveStatus()
+      window.api.getActiveStatuses()
     ])
     setProviders(providerList)
     setData(appData)
-    setStatus(activeStatus)
+    setStatuses(activeStatuses)
     setSelectedProviderId((current) => current ?? providerList[0]?.id ?? null)
     await Promise.all([refreshQuotas(appData.accounts), refreshLoginStatuses(appData.accounts)])
   }
@@ -171,14 +174,15 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!status?.accountId) return
+    if (!selectedProviderId || !statuses?.[selectedProviderId]?.accountId) return
+    const accountId = statuses[selectedProviderId].accountId!
     setExpandedAccounts((current) => {
-      if (current.has(status.accountId!)) return current
+      if (current.has(accountId)) return current
       const next = new Set(current)
-      next.add(status.accountId!)
+      next.add(accountId)
       return next
     })
-  }, [status?.accountId])
+  }, [selectedProviderId, statuses])
 
   function toggleAccountExpanded(accountId: string): void {
     setExpandedAccounts((current) => {
@@ -196,8 +200,8 @@ export default function App() {
     setBusyId(account.id)
     setError(null)
     try {
-      const nextStatus = await window.api.switchAccount(account.id)
-      setStatus(nextStatus)
+      const nextStatuses = await window.api.switchAccount(account.id)
+      setStatuses(nextStatuses)
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể chuyển tài khoản')
@@ -377,10 +381,12 @@ export default function App() {
   }
 
   function isProviderActive(providerId: ProviderId): boolean {
-    return status?.provider === providerId && Boolean(status.accountId)
+    return Boolean(statuses?.[providerId]?.accountId)
   }
 
-  const activeAccount = data?.accounts.find((account) => account.id === status?.accountId)
+  const activeAccount = status?.accountId
+    ? data?.accounts.find((account) => account.id === status.accountId)
+    : undefined
   const providerActiveAccount =
     activeAccount?.provider === selectedProviderId ? activeAccount : null
   const providerActiveQuota = providerActiveAccount ? quotas[providerActiveAccount.id] : null
@@ -569,7 +575,7 @@ export default function App() {
                   ) : (
                     <div className="account-list">
                       {providerAccounts.map((account) => {
-                        const isActive = status?.accountId === account.id
+                        const isActive = statuses?.[account.provider]?.accountId === account.id
                         const loginInfo = getLoginInfo(account)
                         const isExpanded = expandedAccounts.has(account.id)
 

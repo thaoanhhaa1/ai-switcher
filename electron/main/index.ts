@@ -7,7 +7,7 @@ import {
   getAccountsQuota,
   getAccountLoginStatus,
   getChatGptStatus,
-  getActiveStatus,
+  getActiveStatuses,
   getProviderOptions,
   getProviders,
   importChatGptFileAccount,
@@ -69,11 +69,11 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('providers:list', () => getProviders())
   ipcMain.handle('app:getData', () => loadAppData())
-  ipcMain.handle('app:getActiveStatus', () => getActiveStatus())
+  ipcMain.handle('app:getActiveStatuses', () => getActiveStatuses())
   ipcMain.handle('account:add', (_event, input) => addAccount(input).then((result) => result.account))
   ipcMain.handle('account:update', (_event, id, input) => updateAccount(id, input).then((result) => result.account))
   ipcMain.handle('account:delete', (_event, id) => deleteAccount(id))
-  ipcMain.handle('account:switch', (_event, id) => switchAccount(id).then((result) => result.status))
+  ipcMain.handle('account:switch', (_event, id) => switchAccount(id).then((result) => result.statuses))
   ipcMain.handle('account:validate', (_event, provider, apiKey) => validateApiKey(provider, apiKey))
   ipcMain.handle('provider:options', (_event, provider, apiKey) => getProviderOptions(provider, apiKey))
   ipcMain.handle('account:quota', (_event, provider, accountId) => getAccountQuota(provider, accountId))

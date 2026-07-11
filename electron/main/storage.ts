@@ -1,12 +1,18 @@
 import { mkdir, readFile, writeFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
-import type { Account, AppData, UsageEvent } from '../../src/types'
+import type { Account, AppData, ProviderId, UsageEvent } from '../../src/types'
 import { getAppDataDir, getAppDataPath } from './paths'
 
+export const EMPTY_ACTIVE_ACCOUNT_IDS: Record<ProviderId, string | null> = {
+  'codex-freemodel': null,
+  'codex-chatgpt': null,
+  antigravity: null
+}
+
 const DEFAULT_DATA: AppData = {
-  version: 1,
-  activeAccountId: null,
+  version: 2,
+  activeAccountIds: { ...EMPTY_ACTIVE_ACCOUNT_IDS },
   accounts: [],
   usageLog: []
 }
@@ -20,6 +26,46 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+function migrateAppData(parsed: Partial<AppData> & { activeAccountId?: string | null }): AppData {
+  const accounts = parsed.accounts ?? []
+  const activeAccountIds: Record<ProviderId, string | null> = {
+    ...EMPTY_ACTIVE_ACCOUNT_IDS,
+    ...(parsed.activeAccountIds ?? {})
+  }
+
+  if (parsed.activeAccountId) {
+    const legacy = accounts.find((account) => account.id === parsed.activeAccountId)
+    if (legacy && !activeAccountIds[legacy.provider]) {
+      activeAccountIds[legacy.provider] = legacy.id
+    }
+  }
+
+  return {
+    version: 2,
+    activeAccountIds,
+    accounts,
+    usageLog: parsed.usageLog ?? []
+  }
+}
+
+export function getActiveAccountIdForProvider(data: AppData, provider: ProviderId): string | null {
+  return data.activeAccountIds[provider] ?? null
+}
+
+export function withActiveAccountForProvider(
+  data: AppData,
+  provider: ProviderId,
+  accountId: string | null
+): AppData {
+  return {
+    ...data,
+    activeAccountIds: {
+      ...data.activeAccountIds,
+      [provider]: accountId
+    }
+  }
+}
+
 export async function loadAppData(): Promise<AppData> {
   const path = getAppDataPath()
   if (!(await fileExists(path))) {
@@ -27,13 +73,8 @@ export async function loadAppData(): Promise<AppData> {
   }
 
   const raw = await readFile(path, 'utf-8')
-  const parsed = JSON.parse(raw) as AppData
-  return {
-    version: parsed.version ?? 1,
-    activeAccountId: parsed.activeAccountId ?? null,
-    accounts: parsed.accounts ?? [],
-    usageLog: parsed.usageLog ?? []
-  }
+  const parsed = JSON.parse(raw) as Partial<AppData> & { activeAccountId?: string | null }
+  return migrateAppData(parsed)
 }
 
 export async function saveAppData(data: AppData): Promise<void> {

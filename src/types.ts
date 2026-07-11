@@ -60,10 +60,12 @@ export interface UsageEvent {
 
 export interface AppData {
   version: number
-  activeAccountId: string | null
+  activeAccountIds: Record<ProviderId, string | null>
   accounts: Account[]
   usageLog: UsageEvent[]
 }
+
+export type ActiveStatuses = Record<ProviderId, ActiveConfigStatus>
 
 export interface ProviderInfo {
   id: ProviderId
@@ -150,7 +152,7 @@ export interface AccountQuota {
 export interface Api {
   getProviders: () => Promise<ProviderInfo[]>
   getAppData: () => Promise<AppData>
-  getActiveStatus: () => Promise<ActiveConfigStatus>
+  getActiveStatuses: () => Promise<ActiveStatuses>
   addAccount: (input: {
     name: string
     provider: ProviderId
@@ -168,7 +170,7 @@ export interface Api {
     }
   ) => Promise<Account>
   deleteAccount: (id: string) => Promise<void>
-  switchAccount: (id: string) => Promise<ActiveConfigStatus>
+  switchAccount: (id: string) => Promise<ActiveStatuses>
   validateApiKey: (provider: ProviderId, apiKey: string) => Promise<ValidateKeyResult>
   getProviderOptions: (provider: ProviderId, apiKey?: string) => Promise<ProviderOptions>
   getAccountQuota: (provider: ProviderId, accountId: string) => Promise<AccountQuota>
