@@ -74,6 +74,8 @@ export default function App() {
   const [chatGptLogins, setChatGptLogins] = useState<Record<string, ChatGptLoginStatus>>({})
   const [antigravityLogins, setAntigravityLogins] = useState<Record<string, AntigravityLoginStatus>>({})
   const [loginAccount, setLoginAccount] = useState<Account | null>(null)
+  const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set())
+  const [usageLogVisible, setUsageLogVisible] = useState(true)
 
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
@@ -167,6 +169,28 @@ export default function App() {
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (!status?.accountId) return
+    setExpandedAccounts((current) => {
+      if (current.has(status.accountId!)) return current
+      const next = new Set(current)
+      next.add(status.accountId!)
+      return next
+    })
+  }, [status?.accountId])
+
+  function toggleAccountExpanded(accountId: string): void {
+    setExpandedAccounts((current) => {
+      const next = new Set(current)
+      if (next.has(accountId)) {
+        next.delete(accountId)
+      } else {
+        next.add(accountId)
+      }
+      return next
+    })
+  }
 
   async function handleSwitch(account: Account): Promise<void> {
     setBusyId(account.id)
@@ -445,30 +469,48 @@ export default function App() {
             </div>
 
             <div className="provider-toolbar">
-              <button className="btn btn-primary" onClick={openCreateDialog}>
-                + Thêm tài khoản
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => window.api.openDocs(selectedProviderId)}
-              >
-                Tài liệu
-              </button>
-              {selectedProviderId === 'antigravity' ? (
-                <button className="btn btn-secondary" onClick={() => window.api.openAntigravityDir()}>
-                  Mở config opencode
+              <div className="provider-toolbar-start">
+                <button className="btn btn-primary" onClick={openCreateDialog}>
+                  + Thêm tài khoản
                 </button>
-              ) : (
-                <button className="btn btn-secondary" onClick={() => window.api.openCodexDir()}>
-                  Mở ~/.codex
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => window.api.openDocs(selectedProviderId)}
+                >
+                  Tài liệu
                 </button>
-              )}
+                {selectedProviderId === 'antigravity' ? (
+                  <button className="btn btn-secondary" onClick={() => window.api.openAntigravityDir()}>
+                    Mở config opencode
+                  </button>
+                ) : (
+                  <button className="btn btn-secondary" onClick={() => window.api.openCodexDir()}>
+                    Mở ~/.codex
+                  </button>
+                )}
+                <button
+                  className="btn btn-ghost"
+                  disabled={quotaLoading || !providerAccounts.length}
+                  onClick={() => refreshQuotas(providerAccounts)}
+                >
+                  {quotaLoading ? 'Đang tải quota...' : 'Làm mới quota'}
+                </button>
+              </div>
               <button
-                className="btn btn-ghost"
-                disabled={quotaLoading || !providerAccounts.length}
-                onClick={() => refreshQuotas(providerAccounts)}
+                type="button"
+                className={`btn btn-icon usage-log-toggle ${usageLogVisible ? 'active' : ''}`}
+                onClick={() => setUsageLogVisible((visible) => !visible)}
+                aria-pressed={usageLogVisible}
+                aria-label={usageLogVisible ? 'Ẩn nhật ký' : 'Hiện nhật ký'}
+                title={usageLogVisible ? 'Ẩn nhật ký' : 'Hiện nhật ký'}
               >
-                {quotaLoading ? 'Đang tải quota...' : 'Làm mới quota'}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path
+                    d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </button>
             </div>
 
@@ -511,7 +553,7 @@ export default function App() {
               </section>
             )}
 
-            <div className="grid">
+            <div className={`grid${usageLogVisible ? '' : ' grid-single'}`}>
               <section className="panel">
                 <div className="panel-header">
                   <h3>
@@ -529,32 +571,63 @@ export default function App() {
                       {providerAccounts.map((account) => {
                         const isActive = status?.accountId === account.id
                         const loginInfo = getLoginInfo(account)
+                        const isExpanded = expandedAccounts.has(account.id)
 
                         return (
                           <article
                             key={account.id}
-                            className={`account-card ${isActive ? 'active' : ''}`}
+                            className={`account-card ${isActive ? 'active' : ''} ${isExpanded ? 'expanded' : 'collapsed'}`}
                           >
-                            <div>
-                              <div className="account-title">
-                                <strong>{account.name}</strong>
-                                {isActive && <span className="badge">Active</span>}
+                            <button
+                              type="button"
+                              className="account-card-header"
+                              onClick={() => toggleAccountExpanded(account.id)}
+                              aria-expanded={isExpanded}
+                            >
+                              <div className="account-card-header-main">
+                                <div className="account-title">
+                                  <strong>{account.name}</strong>
+                                  {isActive && <span className="badge">Active</span>}
+                                </div>
+                                <div className="account-meta account-summary">
+                                  {account.provider === 'codex-freemodel'
+                                    ? `Key: ${maskKey(account.apiKey)}`
+                                    : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
+                                  {account.provider !== 'antigravity' && (
+                                    <> · {account.settings.model}</>
+                                  )}
+                                  {!isExpanded && <> · Chuyển: {account.switchCount} lần</>}
+                                </div>
                               </div>
-                              <div className="account-meta">
-                                {account.provider === 'codex-freemodel'
-                                  ? `Key: ${maskKey(account.apiKey)}`
-                                  : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
-                                {account.provider !== 'antigravity' && (
-                                  <> · Model: {account.settings.model}</>
-                                )}{' '}
-                                · Chuyển: {account.switchCount} lần
+                              <span
+                                className={`collapse-toggle ${isExpanded ? 'expanded' : ''}`}
+                                aria-hidden="true"
+                              >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              </span>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="account-card-body">
+                                <div className="account-meta">
+                                  {account.provider === 'codex-freemodel'
+                                    ? `Key: ${maskKey(account.apiKey)}`
+                                    : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
+                                  {account.provider !== 'antigravity' && (
+                                    <> · Model: {account.settings.model}</>
+                                  )}{' '}
+                                  · Chuyển: {account.switchCount} lần
+                                </div>
+                                <div className="account-meta">
+                                  Lần cuối: {formatDate(account.lastUsedAt)}
+                                </div>
+                                {account.note && <div className="account-note">{account.note}</div>}
+                                {renderQuotaPanel(account, true)}
                               </div>
-                              <div className="account-meta">
-                                Lần cuối: {formatDate(account.lastUsedAt)}
-                              </div>
-                              {account.note && <div className="account-note">{account.note}</div>}
-                              {renderQuotaPanel(account, true)}
-                            </div>
+                            )}
+
                             <div className="account-actions">
                               <button
                                 className="btn btn-ghost"
@@ -591,30 +664,32 @@ export default function App() {
                 </div>
               </section>
 
-              <section className="panel">
-                <div className="panel-header">
-                  <h3>Nhật ký — {providerLabel(selectedProviderId)}</h3>
-                </div>
-                <div className="panel-body">
-                  {!providerUsageLog.length ? (
-                    <div className="empty-state">Chưa có hoạt động cho provider này.</div>
-                  ) : (
-                    <div className="usage-list">
-                      {providerUsageLog.map((event) => (
-                        <div key={event.id} className="usage-item">
-                          <strong>
-                            {event.accountName} · {event.action}
-                          </strong>
-                          <span>
-                            {formatDate(event.timestamp)} · {event.success ? 'OK' : 'Lỗi'}
-                            {event.message ? ` · ${event.message}` : ''}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </section>
+              {usageLogVisible && (
+                <section className="panel">
+                  <div className="panel-header">
+                    <h3>Nhật ký — {providerLabel(selectedProviderId)}</h3>
+                  </div>
+                  <div className="panel-body">
+                    {!providerUsageLog.length ? (
+                      <div className="empty-state">Chưa có hoạt động cho provider này.</div>
+                    ) : (
+                      <div className="usage-list">
+                        {providerUsageLog.map((event) => (
+                          <div key={event.id} className="usage-item">
+                            <strong>
+                              {event.accountName} · {event.action}
+                            </strong>
+                            <span>
+                              {formatDate(event.timestamp)} · {event.success ? 'OK' : 'Lỗi'}
+                              {event.message ? ` · ${event.message}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
             </div>
           </>
         )}
