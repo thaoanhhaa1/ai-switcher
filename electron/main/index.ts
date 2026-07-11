@@ -12,12 +12,19 @@ import {
   getProviders,
   importChatGptFileAccount,
   importChatGptLiveAccount,
+  importAntigravityFileAccount,
+  importAntigravityLiveAccount,
+  loginAntigravityAccount,
   loginChatGptAccount,
   logoutAccount,
+  logoutAntigravityAccount,
   logoutChatGptAccount,
+  openAntigravityDir,
   openCodexDir,
   openDocs,
+  pickAntigravityAccountsFile,
   pickAuthJsonFile,
+  getAntigravityStatus,
   sendAccountOtp,
   switchAccount,
   updateAccount,
@@ -85,7 +92,16 @@ function registerIpc(): void {
   )
   ipcMain.handle('chatgpt:logout', (_event, accountId) => logoutChatGptAccount(accountId))
   ipcMain.handle('chatgpt:pickAuthFile', () => pickAuthJsonFile())
+  ipcMain.handle('antigravity:loginStatus', (_event, accountId) => getAntigravityStatus(accountId))
+  ipcMain.handle('antigravity:login', (_event, accountId) => loginAntigravityAccount(accountId))
+  ipcMain.handle('antigravity:importLive', (_event, accountId) => importAntigravityLiveAccount(accountId))
+  ipcMain.handle('antigravity:importFile', (_event, accountId, filePath) =>
+    importAntigravityFileAccount(accountId, filePath)
+  )
+  ipcMain.handle('antigravity:logout', (_event, accountId) => logoutAntigravityAccount(accountId))
+  ipcMain.handle('antigravity:pickAccountsFile', () => pickAntigravityAccountsFile())
   ipcMain.handle('codex:openDir', () => openCodexDir())
+  ipcMain.handle('antigravity:openDir', () => openAntigravityDir())
   ipcMain.handle('docs:open', (_event, provider) => openDocs(provider))
 }
 

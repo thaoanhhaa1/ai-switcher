@@ -20,3 +20,20 @@ export function getCodexAuthPath(): string {
 export function getCodexConfigPath(): string {
   return join(getCodexHome(), 'config.toml')
 }
+
+export function getOpencodeConfigDir(): string {
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
+    return join(appData, 'opencode')
+  }
+  const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
+  return join(xdgConfig, 'opencode')
+}
+
+export function getAntigravityAccountsPath(): string {
+  return join(getOpencodeConfigDir(), 'antigravity-accounts.json')
+}
+
+export function getAntigravityConfigPath(): string {
+  return join(getOpencodeConfigDir(), 'antigravity.json')
+}

@@ -5,6 +5,7 @@ import type {
   Account,
   AccountQuota,
   ActiveConfigStatus,
+  AntigravityLoginStatus,
   AppData,
   ChatGptLoginStatus,
   CodexSettings,
@@ -44,7 +45,28 @@ import {
   runChatGptLogin,
   snapshotLiveAuthToAccount
 } from './providers/codex-chatgpt'
-import { getCodexAuthPath, getCodexConfigPath, getCodexHome } from './paths'
+import {
+  ANTIGRAVITY_DOCS,
+  applyAntigravityAccount,
+  clearAntigravityAuth,
+  DEFAULT_ANTIGRAVITY_SETTINGS,
+  fetchAntigravityQuota,
+  getAntigravityConfigDirPath,
+  getAntigravityLoginStatus,
+  importAntigravityFromFile,
+  importAntigravityFromLive,
+  readLiveAntigravityEmail,
+  runAntigravityLogin,
+  snapshotLiveAntigravityToAccount
+} from './providers/antigravity'
+import {
+  getAntigravityAccountsPath,
+  getAntigravityConfigPath,
+  getCodexAuthPath,
+  getCodexConfigPath,
+  getCodexHome,
+  getOpencodeConfigDir
+} from './paths'
 import { appendUsageEvent, findAccount, loadAppData, saveAppData } from './storage'
 
 const PROVIDERS: ProviderInfo[] = [
@@ -61,6 +83,13 @@ const PROVIDERS: ProviderInfo[] = [
     toolName: 'OpenAI Codex CLI',
     configDir: getCodexHome(),
     docsUrl: CODEX_CHATGPT_DOCS
+  },
+  {
+    id: 'antigravity',
+    name: 'Antigravity',
+    toolName: 'OpenCode + Antigravity Auth',
+    configDir: getOpencodeConfigDir(),
+    docsUrl: ANTIGRAVITY_DOCS
   }
 ]
 
@@ -74,7 +103,30 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 function defaultSettings(provider: ProviderId): CodexSettings {
-  return provider === 'codex-chatgpt' ? { ...DEFAULT_CHATGPT_SETTINGS } : { ...DEFAULT_CODEX_SETTINGS }
+  if (provider === 'codex-chatgpt') return { ...DEFAULT_CHATGPT_SETTINGS }
+  if (provider === 'antigravity') return { ...DEFAULT_ANTIGRAVITY_SETTINGS }
+  return { ...DEFAULT_CODEX_SETTINGS }
+}
+
+async function persistAntigravityIdentity(
+  accountId: string,
+  identity: { email?: string; projectId?: string }
+): Promise<Account | null> {
+  const data = await loadAppData()
+  const account = findAccount(data, accountId)
+  if (!account) return null
+
+  const updated: Account = {
+    ...account,
+    antigravityEmail: identity.email ?? account.antigravityEmail
+  }
+
+  const next: AppData = {
+    ...data,
+    accounts: data.accounts.map((item) => (item.id === accountId ? updated : item))
+  }
+  await saveAppData(next)
+  return updated
 }
 
 async function persistChatGptIdentity(accountId: string, identity: {
@@ -112,6 +164,11 @@ async function snapshotActiveAccountAuth(data: AppData): Promise<void> {
     return
   }
 
+  if (active.provider === 'antigravity') {
+    await snapshotLiveAntigravityToAccount(active.id)
+    return
+  }
+
   if (active.provider === 'codex-freemodel') {
     // FreeModel uses API key in data.json; live auth refresh not needed for key mode.
   }
@@ -123,6 +180,42 @@ export function getProviders(): ProviderInfo[] {
 
 export async function getActiveStatus(data?: AppData): Promise<ActiveConfigStatus> {
   const appData = data ?? (await loadAppData())
+
+  if (appData.activeAccountId) {
+    const active = findAccount(appData, appData.activeAccountId)
+    if (active?.provider === 'antigravity') {
+      const authExists = await fileExists(getAntigravityAccountsPath())
+      return {
+        provider: 'antigravity',
+        accountId: active.id,
+        accountName: active.name,
+        codexHome: getAntigravityConfigDirPath(),
+        configExists: await fileExists(getAntigravityConfigPath()),
+        authExists,
+        authMode: 'google-oauth'
+      }
+    }
+  }
+
+  const liveAntigravityEmail = await readLiveAntigravityEmail()
+  if (liveAntigravityEmail) {
+    const matched = appData.accounts.find(
+      (account) =>
+        account.provider === 'antigravity' &&
+        account.antigravityEmail?.toLowerCase() === liveAntigravityEmail.toLowerCase()
+    )
+
+    return {
+      provider: matched?.provider ?? 'antigravity',
+      accountId: matched?.id ?? null,
+      accountName: matched?.name ?? null,
+      codexHome: getAntigravityConfigDirPath(),
+      configExists: await fileExists(getAntigravityConfigPath()),
+      authExists: await fileExists(getAntigravityAccountsPath()),
+      authMode: 'google-oauth'
+    }
+  }
+
   const configExists = await fileExists(getCodexConfigPath())
   const authExists = await fileExists(getCodexAuthPath())
   const liveAuth = await readLiveAuth()
@@ -251,8 +344,10 @@ export async function updateAccount(
   if (data.activeAccountId === id) {
     if (updated.provider === 'codex-freemodel') {
       await applyCodexFreeModelAccount(updated)
-    } else {
+    } else if (updated.provider === 'codex-chatgpt') {
       await applyCodexChatGptAccount(updated)
+    } else if (updated.provider === 'antigravity') {
+      await applyAntigravityAccount(updated)
     }
   }
 
@@ -284,6 +379,7 @@ export async function deleteAccount(id: string): Promise<AppData> {
   await saveAppData(next)
   await clearFreeModelSession(id)
   await clearChatGptAuth(id)
+  await clearAntigravityAuth(id)
 
   return appendUsageEvent(next, {
     accountId: existing.id,
@@ -306,8 +402,10 @@ export async function switchAccount(id: string): Promise<{ data: AppData; status
 
   if (account.provider === 'codex-freemodel') {
     await applyCodexFreeModelAccount(account)
-  } else {
+  } else if (account.provider === 'codex-chatgpt') {
     await applyCodexChatGptAccount(account)
+  } else if (account.provider === 'antigravity') {
+    await applyAntigravityAccount(account)
   }
 
   const updatedAccount: Account = {
@@ -345,6 +443,10 @@ export async function validateApiKey(
     return validateFreeModelKey(apiKey.trim())
   }
 
+  if (provider === 'antigravity') {
+    return { valid: false, message: 'Antigravity dùng Google OAuth, không dùng API key' }
+  }
+
   return { valid: false, message: 'ChatGPT dùng OAuth, không dùng API key' }
 }
 
@@ -372,6 +474,21 @@ export async function getProviderOptions(
     }
   }
 
+  if (provider === 'antigravity') {
+    return {
+      models: [
+        { id: 'claude-opus-4-5-thinking', ownedBy: 'anthropic' },
+        { id: 'gemini-3-pro', ownedBy: 'google' },
+        { id: 'gemini-3-flash', ownedBy: 'google' }
+      ],
+      reasoningEfforts: [
+        { value: 'low', label: 'low' },
+        { value: 'medium', label: 'medium' },
+        { value: 'high', label: 'high' }
+      ]
+    }
+  }
+
   throw new Error('Provider chưa được hỗ trợ')
 }
 
@@ -388,6 +505,10 @@ export async function getAccountQuota(provider: ProviderId, accountId: string): 
 
   if (provider === 'codex-chatgpt') {
     return fetchChatGptQuota(accountId)
+  }
+
+  if (provider === 'antigravity') {
+    return fetchAntigravityQuota(accountId)
   }
 
   throw new Error('Provider chưa được hỗ trợ')
@@ -495,6 +616,55 @@ export async function logoutChatGptAccount(accountId: string): Promise<void> {
   await clearChatGptAuth(accountId)
 }
 
+export async function getAntigravityStatus(accountId: string): Promise<AntigravityLoginStatus> {
+  return getAntigravityLoginStatus(accountId)
+}
+
+export async function loginAntigravityAccount(accountId: string): Promise<AntigravityLoginStatus> {
+  const status = await runAntigravityLogin(accountId)
+  await persistAntigravityIdentity(accountId, {
+    email: status.email,
+    projectId: status.projectId
+  })
+
+  const data = await loadAppData()
+  await appendUsageEvent(data, {
+    accountId,
+    accountName: findAccount(data, accountId)?.name ?? accountId,
+    provider: 'antigravity',
+    action: 'login',
+    success: true,
+    message: 'Đăng nhập Antigravity thành công'
+  })
+
+  return status
+}
+
+export async function importAntigravityLiveAccount(accountId: string): Promise<AntigravityLoginStatus> {
+  const status = await importAntigravityFromLive(accountId)
+  await persistAntigravityIdentity(accountId, {
+    email: status.email,
+    projectId: status.projectId
+  })
+  return status
+}
+
+export async function importAntigravityFileAccount(
+  accountId: string,
+  filePath: string
+): Promise<AntigravityLoginStatus> {
+  const status = await importAntigravityFromFile(accountId, filePath)
+  await persistAntigravityIdentity(accountId, {
+    email: status.email,
+    projectId: status.projectId
+  })
+  return status
+}
+
+export async function logoutAntigravityAccount(accountId: string): Promise<void> {
+  await clearAntigravityAuth(accountId)
+}
+
 export async function pickAuthJsonFile(): Promise<string | null> {
   const result = await dialog.showOpenDialog({
     title: 'Chọn file auth.json',
@@ -509,8 +679,26 @@ export async function pickAuthJsonFile(): Promise<string | null> {
   return result.filePaths[0]
 }
 
+export async function pickAntigravityAccountsFile(): Promise<string | null> {
+  const result = await dialog.showOpenDialog({
+    title: 'Chọn file antigravity-accounts.json',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  })
+
+  if (result.canceled || !result.filePaths.length) {
+    return null
+  }
+
+  return result.filePaths[0]
+}
+
 export async function openCodexDir(): Promise<void> {
   await shell.openPath(getCodexHome())
+}
+
+export async function openAntigravityDir(): Promise<void> {
+  await shell.openPath(getOpencodeConfigDir())
 }
 
 export async function openDocs(provider: ProviderId): Promise<void> {

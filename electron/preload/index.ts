@@ -25,7 +25,15 @@ const api: Api = {
     ipcRenderer.invoke('chatgpt:importFile', accountId, filePath),
   logoutChatGpt: (accountId) => ipcRenderer.invoke('chatgpt:logout', accountId),
   pickAuthJsonFile: () => ipcRenderer.invoke('chatgpt:pickAuthFile'),
+  getAntigravityLoginStatus: (accountId) => ipcRenderer.invoke('antigravity:loginStatus', accountId),
+  loginAntigravity: (accountId) => ipcRenderer.invoke('antigravity:login', accountId),
+  importAntigravityFromLive: (accountId) => ipcRenderer.invoke('antigravity:importLive', accountId),
+  importAntigravityFromFile: (accountId, filePath) =>
+    ipcRenderer.invoke('antigravity:importFile', accountId, filePath),
+  logoutAntigravity: (accountId) => ipcRenderer.invoke('antigravity:logout', accountId),
+  pickAntigravityAccountsFile: () => ipcRenderer.invoke('antigravity:pickAccountsFile'),
   openCodexDir: () => ipcRenderer.invoke('codex:openDir'),
+  openAntigravityDir: () => ipcRenderer.invoke('antigravity:openDir'),
   openDocs: (provider) => ipcRenderer.invoke('docs:open', provider)
 }
 

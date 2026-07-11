@@ -3,6 +3,7 @@ import type {
   Account,
   AccountQuota,
   ActiveConfigStatus,
+  AntigravityLoginStatus,
   AppData,
   ChatGptLoginStatus,
   FreeModelLoginStatus,
@@ -10,6 +11,8 @@ import type {
   ProviderInfo
 } from './types'
 import { AccountDialog } from './components/AccountDialog'
+import { AntigravityAccountDialog } from './components/AntigravityAccountDialog'
+import { AntigravityLoginDialog } from './components/AntigravityLoginDialog'
 import { ChatGptAccountDialog } from './components/ChatGptAccountDialog'
 import { ChatGptLoginDialog } from './components/ChatGptLoginDialog'
 import { FreeModelLoginDialog } from './components/FreeModelLoginDialog'
@@ -28,35 +31,70 @@ function maskKey(key: string): string {
 }
 
 function providerLabel(provider: ProviderId): string {
-  return provider === 'codex-chatgpt' ? 'ChatGPT' : 'FreeModel'
+  if (provider === 'codex-chatgpt') return 'ChatGPT'
+  if (provider === 'antigravity') return 'Antigravity'
+  return 'FreeModel'
+}
+
+function providerShortLabel(provider: ProviderId): string {
+  if (provider === 'codex-freemodel') return 'Codex + FreeModel'
+  if (provider === 'codex-chatgpt') return 'Codex + ChatGPT'
+  return 'Antigravity'
+}
+
+function providerDescription(provider: ProviderId): string {
+  if (provider === 'codex-freemodel') {
+    return 'Quản lý API key FreeModel cho Codex CLI. Ghi config vào ~/.codex.'
+  }
+  if (provider === 'codex-chatgpt') {
+    return 'Quản lý tài khoản ChatGPT OAuth cho Codex CLI. Ghi config vào ~/.codex.'
+  }
+  return 'Quản lý Google OAuth cho Antigravity (Claude/Gemini). Ghi vào ~/.config/opencode.'
+}
+
+function authModeLabel(mode?: ActiveConfigStatus['authMode']): string {
+  if (mode === 'chatgpt' || mode === 'google-oauth') return 'OAuth'
+  if (mode === 'apikey') return 'API key'
+  return '—'
 }
 
 export default function App() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [selectedProviderId, setSelectedProviderId] = useState<ProviderId | null>(null)
   const [data, setData] = useState<AppData | null>(null)
   const [status, setStatus] = useState<ActiveConfigStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [dialogProvider, setDialogProvider] = useState<ProviderId>('codex-freemodel')
-  const [providerPickerOpen, setProviderPickerOpen] = useState(false)
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [quotas, setQuotas] = useState<Record<string, AccountQuota>>({})
   const [quotaLoading, setQuotaLoading] = useState(false)
   const [freeModelLogins, setFreeModelLogins] = useState<Record<string, FreeModelLoginStatus>>({})
   const [chatGptLogins, setChatGptLogins] = useState<Record<string, ChatGptLoginStatus>>({})
+  const [antigravityLogins, setAntigravityLogins] = useState<Record<string, AntigravityLoginStatus>>({})
   const [loginAccount, setLoginAccount] = useState<Account | null>(null)
 
-  const providerMap = useMemo(
-    () => Object.fromEntries(providers.map((provider) => [provider.id, provider])),
-    [providers]
+  const selectedProvider = useMemo(
+    () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
+    [providers, selectedProviderId]
+  )
+
+  const providerAccounts = useMemo(
+    () => data?.accounts.filter((account) => account.provider === selectedProviderId) ?? [],
+    [data?.accounts, selectedProviderId]
+  )
+
+  const providerUsageLog = useMemo(
+    () => data?.usageLog.filter((event) => event.provider === selectedProviderId) ?? [],
+    [data?.usageLog, selectedProviderId]
   )
 
   async function refreshLoginStatuses(accounts: Account[]): Promise<void> {
     if (!accounts.length) {
       setFreeModelLogins({})
       setChatGptLogins({})
+      setAntigravityLogins({})
       return
     }
 
@@ -64,11 +102,16 @@ export default function App() {
       accounts.map(async (account) => {
         if (account.provider === 'codex-chatgpt') {
           const loginStatus = await window.api.getChatGptLoginStatus(account.id)
-          return { id: account.id, freeModel: null, chatGpt: loginStatus }
+          return { id: account.id, freeModel: null, chatGpt: loginStatus, antigravity: null }
+        }
+
+        if (account.provider === 'antigravity') {
+          const loginStatus = await window.api.getAntigravityLoginStatus(account.id)
+          return { id: account.id, freeModel: null, chatGpt: null, antigravity: loginStatus }
         }
 
         const loginStatus = await window.api.getFreeModelLoginStatus(account.id)
-        return { id: account.id, freeModel: loginStatus, chatGpt: null }
+        return { id: account.id, freeModel: loginStatus, chatGpt: null, antigravity: null }
       })
     )
 
@@ -80,6 +123,11 @@ export default function App() {
     setChatGptLogins(
       Object.fromEntries(
         entries.filter((item) => item.chatGpt).map((item) => [item.id, item.chatGpt!])
+      )
+    )
+    setAntigravityLogins(
+      Object.fromEntries(
+        entries.filter((item) => item.antigravity).map((item) => [item.id, item.antigravity!])
       )
     )
   }
@@ -110,6 +158,7 @@ export default function App() {
     setProviders(providerList)
     setData(appData)
     setStatus(activeStatus)
+    setSelectedProviderId((current) => current ?? providerList[0]?.id ?? null)
     await Promise.all([refreshQuotas(appData.accounts), refreshLoginStatuses(appData.accounts)])
   }
 
@@ -149,16 +198,15 @@ export default function App() {
     }
   }
 
-  function openCreateDialog(provider: ProviderId): void {
+  function openCreateDialog(): void {
+    if (!selectedProviderId) return
     setEditingAccount(null)
-    setDialogProvider(provider)
-    setProviderPickerOpen(false)
     setDialogOpen(true)
   }
 
   function openEditDialog(account: Account): void {
     setEditingAccount(account)
-    setDialogProvider(account.provider)
+    setSelectedProviderId(account.provider)
     setDialogOpen(true)
   }
 
@@ -229,6 +277,25 @@ export default function App() {
     await refresh()
   }
 
+  async function handleAntigravitySubmit(input: { name: string; note?: string }): Promise<void> {
+    if (editingAccount) {
+      await window.api.updateAccount(editingAccount.id, {
+        name: input.name,
+        note: input.note
+      })
+    } else {
+      await window.api.addAccount({
+        name: input.name,
+        provider: 'antigravity',
+        note: input.note
+      })
+    }
+
+    setDialogOpen(false)
+    setEditingAccount(null)
+    await refresh()
+  }
+
   function getLoginInfo(account: Account): {
     loggedIn: boolean
     email?: string
@@ -243,6 +310,15 @@ export default function App() {
       }
     }
 
+    if (account.provider === 'antigravity') {
+      const login = antigravityLogins[account.id]
+      return {
+        loggedIn: Boolean(login?.loggedIn),
+        email: login?.email ?? account.antigravityEmail,
+        label: login?.loggedIn ? 'Quản lý Antigravity' : 'Đăng nhập Antigravity'
+      }
+    }
+
     const login = freeModelLogins[account.id]
     return {
       loggedIn: Boolean(login?.loggedIn),
@@ -253,25 +329,38 @@ export default function App() {
 
   function renderQuotaPanel(account: Account, compact = false): JSX.Element {
     const loginInfo = getLoginInfo(account)
-    const isChatGpt = account.provider === 'codex-chatgpt'
 
     return (
       <QuotaPanel
         quota={quotas[account.id] ?? null}
         loading={quotaLoading && !quotas[account.id]}
         loginStatus={loginInfo.loggedIn ? { loggedIn: true, email: loginInfo.email } : null}
-        loginPrompt={isChatGpt ? 'Đăng nhập ChatGPT để xem quota' : 'Đăng nhập FreeModel để xem quota'}
-        hourlyTitle={isChatGpt ? 'Quota cửa sổ chính' : 'Quota 5 giờ'}
-        weeklyTitle={isChatGpt ? 'Quota cửa sổ phụ' : 'Quota 7 ngày'}
+        loginPrompt={
+          account.provider === 'antigravity'
+            ? 'Đăng nhập Antigravity để xem quota'
+            : account.provider === 'codex-chatgpt'
+              ? 'Đăng nhập ChatGPT để xem quota'
+              : 'Đăng nhập FreeModel để xem quota'
+        }
         onLogin={() => setLoginAccount(account)}
         compact={compact}
       />
     )
   }
 
+  function countAccountsForProvider(providerId: ProviderId): number {
+    return data?.accounts.filter((account) => account.provider === providerId).length ?? 0
+  }
+
+  function isProviderActive(providerId: ProviderId): boolean {
+    return status?.provider === providerId && Boolean(status.accountId)
+  }
+
   const activeAccount = data?.accounts.find((account) => account.id === status?.accountId)
-  const activeQuota = activeAccount ? quotas[activeAccount.id] : null
-  const activeLoginInfo = activeAccount ? getLoginInfo(activeAccount) : null
+  const providerActiveAccount =
+    activeAccount?.provider === selectedProviderId ? activeAccount : null
+  const providerActiveQuota = providerActiveAccount ? quotas[providerActiveAccount.id] : null
+  const providerActiveLoginInfo = providerActiveAccount ? getLoginInfo(providerActiveAccount) : null
 
   if (loading) {
     return <div className="main">Đang tải...</div>
@@ -288,221 +377,250 @@ export default function App() {
           </div>
         </div>
 
-        <div className="provider-list">
-          {providers.map((provider) => (
-            <div key={provider.id} className="provider-card">
-              <h2>{provider.name}</h2>
-              <p>{provider.toolName}</p>
-              <button className="btn btn-ghost" onClick={() => window.api.openDocs(provider.id)}>
-                Tài liệu
-              </button>
-            </div>
-          ))}
-        </div>
+        <nav className="sidebar-nav">
+          <div className="sidebar-nav-label">Providers</div>
+          {providers.map((provider) => {
+            const isSelected = selectedProviderId === provider.id
+            const accountCount = countAccountsForProvider(provider.id)
+            const isActive = isProviderActive(provider.id)
 
-        <div className="sidebar-actions">
-          <button className="btn btn-primary" onClick={() => setProviderPickerOpen(true)}>
-            + Thêm tài khoản Codex
-          </button>
-          <button className="btn btn-secondary" onClick={() => window.api.openCodexDir()}>
-            Mở thư mục ~/.codex
-          </button>
-        </div>
+            return (
+              <button
+                key={provider.id}
+                type="button"
+                className={`sidebar-nav-item ${isSelected ? 'active' : ''}`}
+                onClick={() => {
+                  setSelectedProviderId(provider.id)
+                  setError(null)
+                }}
+              >
+                <div className="sidebar-nav-item-head">
+                  <span className="sidebar-nav-title">{providerShortLabel(provider.id)}</span>
+                  {isActive && <span className="sidebar-nav-dot" title="Đang active" />}
+                </div>
+                <span className="sidebar-nav-sub">
+                  {accountCount} tài khoản · {provider.toolName}
+                </span>
+              </button>
+            )
+          })}
+        </nav>
       </aside>
 
       <main className="main">
-        <div className="header">
-          <div>
-            <h2>Codex CLI</h2>
-            <p>Chuyển nhanh giữa tài khoản FreeModel (API key) và ChatGPT (OAuth subscription).</p>
-          </div>
-
-          <div className={`status-card ${status?.accountId ? '' : 'inactive'}`}>
-            <div className="status-label">Đang active</div>
-            <div className="status-value">{status?.accountName ?? 'Chưa chọn tài khoản'}</div>
-            <div className="status-meta">
-              {status?.provider ? providerLabel(status.provider) : '—'} ·{' '}
-              {status?.authMode === 'chatgpt'
-                ? 'OAuth'
-                : status?.authMode === 'apikey'
-                  ? 'API key'
-                  : '—'}{' '}
-              · {status?.configExists ? 'config.toml ✓' : 'config.toml ✗'} ·{' '}
-              {status?.authExists ? 'auth.json ✓' : 'auth.json ✗'}
-            </div>
-          </div>
-        </div>
-
-        {error && <div className="inline-message error">{error}</div>}
-
-        {activeAccount && (
-          <section className="header-quota">
-            <div className="panel">
-              <div className="panel-header">
-                <h3>
-                  Quota tài khoản active — {activeAccount.name}{' '}
-                  <span className="badge subtle">{providerLabel(activeAccount.provider)}</span>
-                </h3>
-                <div className="panel-header-actions">
-                  <button className="btn btn-ghost" onClick={() => setLoginAccount(activeAccount)}>
-                    {activeLoginInfo?.label}
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    disabled={quotaLoading}
-                    onClick={() => refreshQuotas(data?.accounts ?? [])}
-                  >
-                    {quotaLoading ? 'Đang tải...' : 'Làm mới quota'}
-                  </button>
-                </div>
+        {!selectedProvider || !selectedProviderId ? (
+          <div className="empty-state">Chọn provider từ sidebar.</div>
+        ) : (
+          <>
+            <div className="header">
+              <div>
+                <h2>{selectedProvider.name}</h2>
+                <p>{providerDescription(selectedProviderId)}</p>
+                <div className="header-meta">Config: {selectedProvider.configDir}</div>
               </div>
-              <div className="panel-body">
-                <QuotaPanel
-                  quota={activeQuota ?? null}
-                  loading={quotaLoading && !activeQuota}
-                  loginStatus={
-                    activeLoginInfo?.loggedIn
-                      ? { loggedIn: true, email: activeLoginInfo.email }
-                      : null
-                  }
-                  loginPrompt={
-                    activeAccount.provider === 'codex-chatgpt'
-                      ? 'Đăng nhập ChatGPT để xem quota'
-                      : 'Đăng nhập FreeModel để xem quota'
-                  }
-                  hourlyTitle={
-                    activeAccount.provider === 'codex-chatgpt' ? 'Quota cửa sổ chính' : 'Quota 5 giờ'
-                  }
-                  weeklyTitle={
-                    activeAccount.provider === 'codex-chatgpt' ? 'Quota cửa sổ phụ' : 'Quota 7 ngày'
-                  }
-                  onLogin={() => setLoginAccount(activeAccount)}
-                />
+
+              <div
+                className={`status-card ${
+                  providerActiveAccount || isProviderActive(selectedProviderId) ? '' : 'inactive'
+                }`}
+              >
+                <div className="status-label">Active trong provider này</div>
+                <div className="status-value">
+                  {providerActiveAccount?.name ??
+                    (isProviderActive(selectedProviderId) ? status?.accountName : 'Chưa chọn')}
+                </div>
+                {providerActiveAccount || isProviderActive(selectedProviderId) ? (
+                  <div className="status-meta">
+                    {authModeLabel(status?.authMode)} ·{' '}
+                    {selectedProviderId === 'antigravity'
+                      ? status?.authExists
+                        ? 'accounts.json ✓'
+                        : 'accounts.json ✗'
+                      : `${status?.configExists ? 'config.toml ✓' : 'config.toml ✗'} · ${status?.authExists ? 'auth.json ✓' : 'auth.json ✗'}`}
+                  </div>
+                ) : (
+                  <div className="status-meta">Chuyển sang một tài khoản bên dưới</div>
+                )}
               </div>
             </div>
-          </section>
-        )}
 
-        <div className="grid">
-          <section className="panel">
-            <div className="panel-header">
-              <h3>Tài khoản ({data?.accounts.length ?? 0})</h3>
-            </div>
-            <div className="panel-body">
-              {!data?.accounts.length ? (
-                <div className="empty-state">
-                  Chưa có tài khoản nào. Thêm tài khoản FreeModel hoặc ChatGPT để bắt đầu.
-                </div>
+            <div className="provider-toolbar">
+              <button className="btn btn-primary" onClick={openCreateDialog}>
+                + Thêm tài khoản
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => window.api.openDocs(selectedProviderId)}
+              >
+                Tài liệu
+              </button>
+              {selectedProviderId === 'antigravity' ? (
+                <button className="btn btn-secondary" onClick={() => window.api.openAntigravityDir()}>
+                  Mở config opencode
+                </button>
               ) : (
-                <div className="account-list">
-                  {data.accounts.map((account) => {
-                    const isActive = status?.accountId === account.id
-                    const loginInfo = getLoginInfo(account)
-                    const providerInfo = providerMap[account.provider]
-
-                    return (
-                      <article key={account.id} className={`account-card ${isActive ? 'active' : ''}`}>
-                        <div>
-                          <div className="account-title">
-                            <strong>{account.name}</strong>
-                            <span className="badge subtle">{providerLabel(account.provider)}</span>
-                            {isActive && <span className="badge">Active</span>}
-                          </div>
-                          <div className="account-meta">
-                            {account.provider === 'codex-freemodel'
-                              ? `Key: ${maskKey(account.apiKey)}`
-                              : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}{' '}
-                            · Model: {account.settings.model} · Chuyển: {account.switchCount} lần
-                          </div>
-                          <div className="account-meta">Lần cuối: {formatDate(account.lastUsedAt)}</div>
-                          {account.note && <div className="account-note">{account.note}</div>}
-                          {providerInfo && (
-                            <div className="account-meta muted">{providerInfo.name}</div>
-                          )}
-                          {renderQuotaPanel(account, true)}
-                        </div>
-                        <div className="account-actions">
-                          <button className="btn btn-ghost" onClick={() => setLoginAccount(account)}>
-                            Login
-                          </button>
-                          <button
-                            className="btn btn-primary"
-                            disabled={busyId === account.id || isActive}
-                            onClick={() => handleSwitch(account)}
-                          >
-                            {isActive ? 'Đang dùng' : 'Chuyển sang'}
-                          </button>
-                          <button className="btn btn-secondary" onClick={() => openEditDialog(account)}>
-                            Sửa
-                          </button>
-                          <button
-                            className="btn btn-danger"
-                            disabled={busyId === account.id}
-                            onClick={() => handleDelete(account)}
-                          >
-                            Xóa
-                          </button>
-                        </div>
-                      </article>
-                    )
-                  })}
-                </div>
+                <button className="btn btn-secondary" onClick={() => window.api.openCodexDir()}>
+                  Mở ~/.codex
+                </button>
               )}
+              <button
+                className="btn btn-ghost"
+                disabled={quotaLoading || !providerAccounts.length}
+                onClick={() => refreshQuotas(providerAccounts)}
+              >
+                {quotaLoading ? 'Đang tải quota...' : 'Làm mới quota'}
+              </button>
             </div>
-          </section>
 
-          <section className="panel">
-            <div className="panel-header">
-              <h3>Nhật ký sử dụng</h3>
-            </div>
-            <div className="panel-body">
-              {!data?.usageLog.length ? (
-                <div className="empty-state">Chưa có hoạt động nào.</div>
-              ) : (
-                <div className="usage-list">
-                  {data.usageLog.map((event) => (
-                    <div key={event.id} className="usage-item">
-                      <strong>
-                        {event.accountName} · {event.action}
-                      </strong>
-                      <span>
-                        {formatDate(event.timestamp)} · {event.success ? 'OK' : 'Lỗi'}
-                        {event.message ? ` · ${event.message}` : ''}
-                      </span>
+            {error && <div className="inline-message error">{error}</div>}
+
+            {providerActiveAccount && (
+              <section className="header-quota">
+                <div className="panel">
+                  <div className="panel-header">
+                    <h3>Quota active — {providerActiveAccount.name}</h3>
+                    <div className="panel-header-actions">
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setLoginAccount(providerActiveAccount)}
+                      >
+                        {providerActiveLoginInfo?.label}
+                      </button>
                     </div>
-                  ))}
+                  </div>
+                  <div className="panel-body">
+                    <QuotaPanel
+                      quota={providerActiveQuota ?? null}
+                      loading={quotaLoading && !providerActiveQuota}
+                      loginStatus={
+                        providerActiveLoginInfo?.loggedIn
+                          ? { loggedIn: true, email: providerActiveLoginInfo.email }
+                          : null
+                      }
+                      loginPrompt={
+                        selectedProviderId === 'antigravity'
+                          ? 'Đăng nhập Antigravity để xem quota'
+                          : selectedProviderId === 'codex-chatgpt'
+                            ? 'Đăng nhập ChatGPT để xem quota'
+                            : 'Đăng nhập FreeModel để xem quota'
+                      }
+                      onLogin={() => setLoginAccount(providerActiveAccount)}
+                    />
+                  </div>
                 </div>
-              )}
+              </section>
+            )}
+
+            <div className="grid">
+              <section className="panel">
+                <div className="panel-header">
+                  <h3>
+                    Tài khoản {providerLabel(selectedProviderId)} ({providerAccounts.length})
+                  </h3>
+                </div>
+                <div className="panel-body">
+                  {!providerAccounts.length ? (
+                    <div className="empty-state">
+                      Chưa có tài khoản {providerLabel(selectedProviderId)}. Bấm &quot;Thêm tài
+                      khoản&quot; để bắt đầu.
+                    </div>
+                  ) : (
+                    <div className="account-list">
+                      {providerAccounts.map((account) => {
+                        const isActive = status?.accountId === account.id
+                        const loginInfo = getLoginInfo(account)
+
+                        return (
+                          <article
+                            key={account.id}
+                            className={`account-card ${isActive ? 'active' : ''}`}
+                          >
+                            <div>
+                              <div className="account-title">
+                                <strong>{account.name}</strong>
+                                {isActive && <span className="badge">Active</span>}
+                              </div>
+                              <div className="account-meta">
+                                {account.provider === 'codex-freemodel'
+                                  ? `Key: ${maskKey(account.apiKey)}`
+                                  : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
+                                {account.provider !== 'antigravity' && (
+                                  <> · Model: {account.settings.model}</>
+                                )}{' '}
+                                · Chuyển: {account.switchCount} lần
+                              </div>
+                              <div className="account-meta">
+                                Lần cuối: {formatDate(account.lastUsedAt)}
+                              </div>
+                              {account.note && <div className="account-note">{account.note}</div>}
+                              {renderQuotaPanel(account, true)}
+                            </div>
+                            <div className="account-actions">
+                              <button
+                                className="btn btn-ghost"
+                                onClick={() => setLoginAccount(account)}
+                              >
+                                Login
+                              </button>
+                              <button
+                                className="btn btn-primary"
+                                disabled={busyId === account.id || isActive}
+                                onClick={() => handleSwitch(account)}
+                              >
+                                {isActive ? 'Đang dùng' : 'Chuyển sang'}
+                              </button>
+                              <button
+                                className="btn btn-secondary"
+                                onClick={() => openEditDialog(account)}
+                              >
+                                Sửa
+                              </button>
+                              <button
+                                className="btn btn-danger"
+                                disabled={busyId === account.id}
+                                onClick={() => handleDelete(account)}
+                              >
+                                Xóa
+                              </button>
+                            </div>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="panel">
+                <div className="panel-header">
+                  <h3>Nhật ký — {providerLabel(selectedProviderId)}</h3>
+                </div>
+                <div className="panel-body">
+                  {!providerUsageLog.length ? (
+                    <div className="empty-state">Chưa có hoạt động cho provider này.</div>
+                  ) : (
+                    <div className="usage-list">
+                      {providerUsageLog.map((event) => (
+                        <div key={event.id} className="usage-item">
+                          <strong>
+                            {event.accountName} · {event.action}
+                          </strong>
+                          <span>
+                            {formatDate(event.timestamp)} · {event.success ? 'OK' : 'Lỗi'}
+                            {event.message ? ` · ${event.message}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
             </div>
-          </section>
-        </div>
+          </>
+        )}
       </main>
 
-      {providerPickerOpen && (
-        <div className="dialog-backdrop" onClick={() => setProviderPickerOpen(false)}>
-          <div className="dialog dialog-sm" onClick={(event) => event.stopPropagation()}>
-            <h3>Chọn loại tài khoản Codex</h3>
-            <p className="dialog-desc">Cả hai đều ghi vào ~/.codex — chỉ một tài khoản active tại một thời điểm.</p>
-            <div className="provider-picker">
-              <button className="provider-picker-card" onClick={() => openCreateDialog('codex-freemodel')}>
-                <strong>FreeModel</strong>
-                <span>API key từ freemodel.dev</span>
-              </button>
-              <button className="provider-picker-card" onClick={() => openCreateDialog('codex-chatgpt')}>
-                <strong>ChatGPT</strong>
-                <span>OAuth subscription (Plus/Pro)</span>
-              </button>
-            </div>
-            <div className="dialog-actions">
-              <button className="btn btn-secondary" onClick={() => setProviderPickerOpen(false)}>
-                Hủy
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {dialogOpen && dialogProvider === 'codex-freemodel' && (
+      {dialogOpen && selectedProviderId === 'codex-freemodel' && (
         <AccountDialog
           account={editingAccount?.provider === 'codex-freemodel' ? editingAccount : null}
           onClose={() => {
@@ -513,7 +631,7 @@ export default function App() {
         />
       )}
 
-      {dialogOpen && dialogProvider === 'codex-chatgpt' && (
+      {dialogOpen && selectedProviderId === 'codex-chatgpt' && (
         <ChatGptAccountDialog
           account={editingAccount?.provider === 'codex-chatgpt' ? editingAccount : null}
           onClose={() => {
@@ -521,6 +639,17 @@ export default function App() {
             setEditingAccount(null)
           }}
           onSubmit={handleChatGptSubmit}
+        />
+      )}
+
+      {dialogOpen && selectedProviderId === 'antigravity' && (
+        <AntigravityAccountDialog
+          account={editingAccount?.provider === 'antigravity' ? editingAccount : null}
+          onClose={() => {
+            setDialogOpen(false)
+            setEditingAccount(null)
+          }}
+          onSubmit={handleAntigravitySubmit}
         />
       )}
 
@@ -536,6 +665,16 @@ export default function App() {
 
       {loginAccount?.provider === 'codex-chatgpt' && (
         <ChatGptLoginDialog
+          account={loginAccount}
+          onClose={() => setLoginAccount(null)}
+          onSuccess={async () => {
+            await refresh()
+          }}
+        />
+      )}
+
+      {loginAccount?.provider === 'antigravity' && (
+        <AntigravityLoginDialog
           account={loginAccount}
           onClose={() => setLoginAccount(null)}
           onSuccess={async () => {

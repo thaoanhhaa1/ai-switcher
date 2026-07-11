@@ -122,8 +122,8 @@ export function QuotaPanel({
   compact = false,
   loginStatus,
   loginPrompt = 'Đăng nhập để xem quota',
-  hourlyTitle = 'Quota 5 giờ',
-  weeklyTitle = 'Quota 7 ngày',
+  hourlyTitle: hourlyTitleProp = 'Quota 5 giờ',
+  weeklyTitle: weeklyTitleProp = 'Quota 7 ngày',
   onLogin
 }: QuotaPanelProps) {
   if (loading) {
@@ -135,6 +135,9 @@ export function QuotaPanel({
   }
 
   const displayMode = quota.displayMode ?? 'cents'
+  const hourlyTitle = quota.windowLabels?.hourly ?? hourlyTitleProp
+  const weeklyTitle = quota.windowLabels?.weekly ?? weeklyTitleProp
+  const codeReviewTitle = quota.windowLabels?.codeReview ?? 'Code review'
 
   if (!quota.available) {
     return (
@@ -216,7 +219,7 @@ export function QuotaPanel({
       {quota.codeReview && quota.codeReview.limitCents > 0 && (
         <div className="quota-extra">
           <QuotaWindowCard
-            title={getWindowTitle(quota.codeReview, 'Code review')}
+            title={getWindowTitle(quota.codeReview, codeReviewTitle)}
             window={quota.codeReview}
             compact={compact}
             displayMode={displayMode}

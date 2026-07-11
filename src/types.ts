@@ -1,4 +1,4 @@
-export type ProviderId = 'codex-freemodel' | 'codex-chatgpt'
+export type ProviderId = 'codex-freemodel' | 'codex-chatgpt' | 'antigravity'
 
 export interface CodexSettings {
   model: string
@@ -20,6 +20,7 @@ export interface Account {
   freemodelEmail?: string
   chatgptEmail?: string
   chatgptAccountId?: string
+  antigravityEmail?: string
   planType?: string
 }
 
@@ -36,6 +37,13 @@ export interface ChatGptLoginStatus {
   email?: string
   accountId?: string
   planType?: string
+  message?: string
+}
+
+export interface AntigravityLoginStatus {
+  loggedIn: boolean
+  email?: string
+  projectId?: string
   message?: string
 }
 
@@ -72,7 +80,7 @@ export interface ActiveConfigStatus {
   codexHome: string
   configExists: boolean
   authExists: boolean
-  authMode?: 'apikey' | 'chatgpt' | 'unknown'
+  authMode?: 'apikey' | 'chatgpt' | 'google-oauth' | 'unknown'
 }
 
 export interface ValidateKeyResult {
@@ -128,6 +136,11 @@ export interface AccountQuota {
     totalRequests?: number
     totalTokens?: number
   }
+  windowLabels?: {
+    hourly?: string
+    weekly?: string
+    codeReview?: string
+  }
   codeReview?: QuotaWindow | null
   hourly: QuotaWindow
   weekly: QuotaWindow
@@ -174,7 +187,14 @@ export interface Api {
   importChatGptFromFile: (accountId: string, filePath: string) => Promise<ChatGptLoginStatus>
   logoutChatGpt: (accountId: string) => Promise<void>
   pickAuthJsonFile: () => Promise<string | null>
+  getAntigravityLoginStatus: (accountId: string) => Promise<AntigravityLoginStatus>
+  loginAntigravity: (accountId: string) => Promise<AntigravityLoginStatus>
+  importAntigravityFromLive: (accountId: string) => Promise<AntigravityLoginStatus>
+  importAntigravityFromFile: (accountId: string, filePath: string) => Promise<AntigravityLoginStatus>
+  logoutAntigravity: (accountId: string) => Promise<void>
+  pickAntigravityAccountsFile: () => Promise<string | null>
   openCodexDir: () => Promise<void>
+  openAntigravityDir: () => Promise<void>
   openDocs: (provider: ProviderId) => Promise<void>
 }
 

@@ -2,23 +2,22 @@
 
 Ứng dụng desktop đa nền tảng (macOS, Windows, Linux) để quản lý và chuyển đổi tài khoản/config cho các AI provider.
 
-Hiện hỗ trợ **OpenAI Codex CLI** qua hai chế độ:
+Hiện hỗ trợ:
 
-| Provider | Auth | Quota |
-|----------|------|-------|
-| [FreeModel](https://freemodel.dev/dashboard/docs#codex) | API key | Dashboard OTP login |
-| [ChatGPT](https://developers.openai.com/codex/auth) | OAuth subscription | ChatGPT `wham/usage` API |
+| Provider | Tool | Auth | Quota |
+|----------|------|------|-------|
+| [FreeModel](https://freemodel.dev/dashboard/docs#codex) | Codex CLI | API key | Dashboard OTP login |
+| [ChatGPT](https://developers.openai.com/codex/auth) | Codex CLI | OAuth subscription | ChatGPT `wham/usage` API |
+| [Antigravity](https://github.com/NoeFabris/opencode-antigravity-auth) | OpenCode | Google OAuth | Claude / Gemini 3 Pro / Flash |
 
 ## Tính năng
 
-- Thêm / sửa / xóa nhiều tài khoản Codex (FreeModel hoặc ChatGPT)
+- Thêm / sửa / xóa nhiều tài khoản (Codex FreeModel, Codex ChatGPT, Antigravity)
 - Chuyển tài khoản active chỉ với một click
-- Tự động ghi `~/.codex/auth.json` và `~/.codex/config.toml`
-- Theo dõi quota theo từng tài khoản (5h / 7 ngày cho FreeModel; cửa sổ chính/phụ cho ChatGPT)
-- Đăng nhập FreeModel qua OTP để đọc quota dashboard
-- Đăng nhập ChatGPT qua `codex login`, import từ `~/.codex`, hoặc chọn file `auth.json`
-- Kiểm tra API key FreeModel qua endpoint API
-- Theo dõi lịch sử chuyển tài khoản và số lần sử dụng
+- Tự động ghi `~/.codex/` hoặc `~/.config/opencode/antigravity-accounts.json`
+- Theo dõi quota theo từng tài khoản
+- Đăng nhập FreeModel qua OTP, ChatGPT qua `codex login`, Antigravity qua `opencode auth login`
+- Import auth từ file hoặc config live
 
 ## Cấu hình Codex được áp dụng
 
@@ -80,11 +79,35 @@ preferred_auth_method = "chatgpt"
 
 Tham khảo: [Codex auth docs](https://developers.openai.com/codex/auth)
 
+### Antigravity (Google OAuth via OpenCode)
+
+**`~/.config/opencode/antigravity-accounts.json`**
+
+```json
+{
+  "version": 3,
+  "accounts": [
+    {
+      "email": "you@gmail.com",
+      "refreshToken": "1//0abc...",
+      "projectId": "my-gcp-project",
+      "enabled": true
+    }
+  ],
+  "activeIndex": 0
+}
+```
+
+Cần cài [OpenCode CLI](https://opencode.ai) và plugin `opencode-antigravity-auth`.
+
+Tham khảo: [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth)
+
 ## Yêu cầu
 
 - Node.js 18+
 - npm
-- **Codex CLI** — cần khi đăng nhập ChatGPT qua OAuth (`codex login`)
+- **Codex CLI** — `npm install -g @openai/codex` (login ChatGPT)
+- **OpenCode CLI** — `npm install -g opencode` (login Antigravity)
 
 Cài Codex CLI:
 
@@ -126,8 +149,9 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 |-----------|--------|
 | `~/.ai-switcher/data.json` | Danh sách tài khoản, lịch sử sử dụng |
 | `~/.ai-switcher/freemodel-sessions/{id}.json` | Session cookie FreeModel (đọc quota) |
-| `~/.ai-switcher/codex-auth/{id}.json` | Snapshot auth ChatGPT OAuth theo tài khoản |
-| `~/.codex/` | Config live của Codex CLI (auth + config.toml) |
+| `~/.ai-switcher/codex-auth/{id}.json` | Snapshot auth ChatGPT OAuth |
+| `~/.ai-switcher/antigravity-auth/{id}.json` | Snapshot Google OAuth Antigravity |
+| `~/.config/opencode/antigravity-accounts.json` | Config live Antigravity (OpenCode) |
 
 ## Hướng dẫn sử dụng
 
@@ -149,10 +173,20 @@ File cài đặt sẽ nằm trong thư mục `release/`.
    - **Chọn file auth.json** — import từ file backup
 4. Bấm **Chuyển sang** để áp dụng auth vào `~/.codex`
 
+| `~/.codex/` | Config live Codex CLI |
+
+### Thêm tài khoản Antigravity
+
+1. Cài OpenCode + plugin `opencode-antigravity-auth` trong `~/.config/opencode/opencode.json`
+2. Trong AI Switcher: **+ Thêm tài khoản** → **Antigravity**
+3. Liên kết auth: `opencode auth login`, import live, hoặc chọn file JSON
+4. **Chuyển sang** để ghi `antigravity-accounts.json` với account active
+
 ### Xem quota
 
 - **FreeModel**: cần đăng nhập dashboard (OTP). API key alone không đủ quyền đọc quota.
-- **ChatGPT**: cần auth OAuth hợp lệ. Quota hiển thị theo % (cửa sổ chính / phụ).
+- **ChatGPT**: auth OAuth hợp lệ, quota theo %
+- **Antigravity**: Claude, Gemini 3 Pro, Gemini 3 Flash (% còn lại + thời gian reset)
 
 ## Roadmap
 
