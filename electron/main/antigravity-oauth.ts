@@ -2,9 +2,8 @@ import { createHash, randomBytes } from 'crypto'
 import { createServer } from 'http'
 import { shell } from 'electron'
 import type { AntigravityAccountEntry } from './antigravity-auth-storage'
+import { getAntigravityOAuthCredentials } from './antigravity-oauth-config'
 
-const CLIENT_ID = 'REDACTED_ANTIGRAVITY_CLIENT_ID'
-const CLIENT_SECRET = 'REDACTED_ANTIGRAVITY_CLIENT_SECRET'
 const REDIRECT_URI = 'http://localhost:51121/oauth-callback'
 const OAUTH_PORT = 51121
 const LOAD_ENDPOINTS = [
@@ -48,11 +47,12 @@ function generatePkce(): { verifier: string; challenge: string } {
   return { verifier, challenge }
 }
 
-function buildAuthorizationUrl(verifier: string, projectId = ''): string {
+async function buildAuthorizationUrl(verifier: string, projectId = ''): Promise<string> {
+  const { clientId } = await getAntigravityOAuthCredentials()
   const challenge = createHash('sha256').update(verifier).digest('base64url')
 
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
-  url.searchParams.set('client_id', CLIENT_ID)
+  url.searchParams.set('client_id', clientId)
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('redirect_uri', REDIRECT_URI)
   url.searchParams.set('scope', SCOPES.join(' '))
@@ -116,6 +116,7 @@ async function fetchProjectId(accessToken: string): Promise<string> {
 
 async function exchangeAuthorizationCode(code: string, state: string): Promise<AntigravityAccountEntry> {
   const { verifier, projectId: stateProjectId } = decodeState(state)
+  const { clientId, clientSecret } = await getAntigravityOAuthCredentials()
 
   const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -124,8 +125,8 @@ async function exchangeAuthorizationCode(code: string, state: string): Promise<A
       'User-Agent': GEMINI_USER_AGENT
     },
     body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       code,
       grant_type: 'authorization_code',
       redirect_uri: REDIRECT_URI,
@@ -235,7 +236,7 @@ function waitForOAuthCallback(): Promise<{ code: string; state: string }> {
 
 export async function runAntigravityOAuthLogin(): Promise<AntigravityAccountEntry> {
   const { verifier } = generatePkce()
-  const authUrl = buildAuthorizationUrl(verifier)
+  const authUrl = await buildAuthorizationUrl(verifier)
 
   const callbackPromise = waitForOAuthCallback()
   await shell.openExternal(authUrl)

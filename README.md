@@ -95,6 +95,8 @@ Tham khảo: [Codex auth docs](https://developers.openai.com/codex/auth)
 
 Cần cài [OpenCode CLI](https://opencode.ai) và plugin `opencode-antigravity-auth`.
 
+OAuth client credentials được tải từ [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) khi đăng nhập. Nếu cần override (offline hoặc custom app), đặt `ANTIGRAVITY_CLIENT_ID` và `ANTIGRAVITY_CLIENT_SECRET` trong `.env` (xem `.env.example`).
+
 **Antigravity IDE — `~/Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb`**
 
 Khi chuyển tài khoản, app cũng inject OAuth token vào SQLite database của Antigravity IDE. Nếu IDE đang mở, app sẽ tự đóng và mở lại IDE để áp dụng.

@@ -15,14 +15,13 @@ import {
 } from '../antigravity-auth-storage'
 import { applyAntigravityIdeAccount } from '../antigravity-ide'
 import { runAntigravityOAuthLogin } from '../antigravity-oauth'
+import { getAntigravityOAuthCredentials } from '../antigravity-oauth-config'
 import { getAntigravityAccountsPath, getOpencodeConfigDir } from '../paths'
 import { formatResetAt, formatResetLabelFromTimestamp } from '../quota-utils'
 import { loadAppData } from '../storage'
 
 export const ANTIGRAVITY_DOCS = 'https://github.com/NoeFabris/opencode-antigravity-auth'
 
-const CLIENT_ID = 'REDACTED_ANTIGRAVITY_CLIENT_ID'
-const CLIENT_SECRET = 'REDACTED_ANTIGRAVITY_CLIENT_SECRET'
 const CLOUD_CODE_BASE = 'https://cloudcode-pa.googleapis.com'
 const USER_AGENT = 'antigravity/windows/amd64'
 const FALLBACK_PROJECT_ID = 'bamboo-precept-lgxtn'
@@ -109,6 +108,7 @@ interface RefreshedGoogleToken {
 }
 
 async function refreshGoogleToken(refreshToken: string): Promise<RefreshedGoogleToken> {
+  const { clientId, clientSecret } = await getAntigravityOAuthCredentials()
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: {
@@ -117,8 +117,8 @@ async function refreshGoogleToken(refreshToken: string): Promise<RefreshedGoogle
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET
+      client_id: clientId,
+      client_secret: clientSecret
     })
   })
 
