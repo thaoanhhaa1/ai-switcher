@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { Api } from '../../src/types'
 
 const api: Api = {
+  getRuntimeInfo: () => ipcRenderer.invoke('app:getRuntimeInfo'),
   getProviders: () => ipcRenderer.invoke('providers:list'),
   getAppData: () => ipcRenderer.invoke('app:getData'),
   getActiveStatuses: () => ipcRenderer.invoke('app:getActiveStatuses'),

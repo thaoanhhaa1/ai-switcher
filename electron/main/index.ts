@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'path'
+import { isDev, shouldApplyAntigravityIde, type AppRuntimeInfo } from './env'
 import {
   addAccount,
   deleteAccount,
@@ -32,6 +33,17 @@ import {
   verifyAccountOtp
 } from './services'
 import { loadAppData } from './storage'
+import { getAppDataDir, getCodexHome, getOpencodeConfigDir } from './paths'
+
+function getRuntimeInfo(): AppRuntimeInfo {
+  return {
+    env: isDev() ? 'development' : 'production',
+    appDataDir: getAppDataDir(),
+    codexHome: getCodexHome(),
+    opencodeConfigDir: getOpencodeConfigDir(),
+    applyAntigravityIde: shouldApplyAntigravityIde()
+  }
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -40,7 +52,7 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    title: 'AI Switcher',
+    title: isDev() ? 'AI Switcher [DEV]' : 'AI Switcher',
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -67,6 +79,7 @@ function createWindow(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('app:getRuntimeInfo', () => getRuntimeInfo())
   ipcMain.handle('providers:list', () => getProviders())
   ipcMain.handle('app:getData', () => loadAppData())
   ipcMain.handle('app:getActiveStatuses', () => getActiveStatuses())
@@ -107,7 +120,18 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   if (process.platform === 'win32') {
-    app.setAppUserModelId('dev.aiswitcher.app')
+    app.setAppUserModelId(isDev() ? 'dev.aiswitcher.app.dev' : 'dev.aiswitcher.app')
+  }
+
+  if (isDev()) {
+    const runtime = getRuntimeInfo()
+    console.info('[ai-switcher] development mode')
+    console.info(`  app data: ${runtime.appDataDir}`)
+    console.info(`  codex:    ${runtime.codexHome}`)
+    console.info(`  opencode: ${runtime.opencodeConfigDir}`)
+    if (!runtime.applyAntigravityIde) {
+      console.info('  antigravity IDE sync: disabled')
+    }
   }
 
   registerIpc()

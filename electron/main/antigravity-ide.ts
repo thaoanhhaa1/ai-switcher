@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
 import type { AntigravityAccountEntry } from './antigravity-auth-storage'
+import { shouldApplyAntigravityIde } from './env'
 import {
   createMinimalUserStatusPayload,
   createOAuthInfo,
@@ -245,6 +246,14 @@ export async function applyAntigravityIdeAccount(
   entry: AntigravityAccountEntry,
   tokens: { accessToken: string; expiresIn: number }
 ): Promise<AntigravityIdeApplyResult> {
+  if (!shouldApplyAntigravityIde()) {
+    return {
+      applied: false,
+      message:
+        'Dev mode: bỏ qua đồng bộ Antigravity IDE. Đặt AI_SWITCHER_APPLY_ANTIGRAVITY_IDE=1 trong .env.development để bật.'
+    }
+  }
+
   const dbPath = await resolveAntigravityIdeDbPath()
   if (!dbPath) {
     return {

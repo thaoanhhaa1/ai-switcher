@@ -1,8 +1,13 @@
 import { homedir } from 'os'
 import { join } from 'path'
+import { getDefaultAppDataDir, isDev } from './env'
 
 export function getAppDataDir(): string {
-  return join(homedir(), '.ai-switcher')
+  const override = process.env.AI_SWITCHER_DATA_DIR?.trim()
+  if (override) {
+    return override
+  }
+  return getDefaultAppDataDir()
 }
 
 export function getAppDataPath(): string {
@@ -10,7 +15,13 @@ export function getAppDataPath(): string {
 }
 
 export function getCodexHome(): string {
-  return process.env.CODEX_HOME ?? join(homedir(), '.codex')
+  if (process.env.CODEX_HOME?.trim()) {
+    return process.env.CODEX_HOME.trim()
+  }
+  if (isDev()) {
+    return join(getAppDataDir(), '.codex')
+  }
+  return join(homedir(), '.codex')
 }
 
 export function getCodexAuthPath(): string {
@@ -22,6 +33,12 @@ export function getCodexConfigPath(): string {
 }
 
 export function getOpencodeConfigDir(): string {
+  if (process.env.OPENCODE_CONFIG_DIR?.trim()) {
+    return process.env.OPENCODE_CONFIG_DIR.trim()
+  }
+  if (isDev()) {
+    return join(getAppDataDir(), 'opencode')
+  }
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
     return join(appData, 'opencode')

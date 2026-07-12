@@ -6,6 +6,7 @@ import type {
   ActiveStatuses,
   AntigravityLoginStatus,
   AppData,
+  AppRuntimeInfo,
   ChatGptLoginStatus,
   FreeModelLoginStatus,
   ProviderId,
@@ -43,14 +44,14 @@ function providerShortLabel(provider: ProviderId): string {
   return 'Antigravity'
 }
 
-function providerDescription(provider: ProviderId): string {
+function providerDescription(provider: ProviderId, configDir: string): string {
   if (provider === 'codex-freemodel') {
-    return 'Quản lý API key FreeModel cho Codex CLI. Ghi config vào ~/.codex.'
+    return `Quản lý API key FreeModel cho Codex CLI. Ghi config vào ${configDir}.`
   }
   if (provider === 'codex-chatgpt') {
-    return 'Quản lý tài khoản ChatGPT OAuth cho Codex CLI. Ghi config vào ~/.codex.'
+    return `Quản lý tài khoản ChatGPT OAuth cho Codex CLI. Ghi config vào ${configDir}.`
   }
-  return 'Quản lý Google OAuth cho Antigravity (OpenCode + IDE). Ghi vào ~/.config/opencode và Antigravity IDE.'
+  return 'Quản lý Google OAuth cho Antigravity (OpenCode + IDE). Ghi vào thư mục OpenCode và Antigravity IDE (prod).'
 }
 
 function authModeLabel(mode?: ActiveConfigStatus['authMode']): string {
@@ -77,6 +78,7 @@ export default function App() {
   const [loginAccount, setLoginAccount] = useState<Account | null>(null)
   const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set())
   const [usageLogVisible, setUsageLogVisible] = useState(true)
+  const [runtimeInfo, setRuntimeInfo] = useState<AppRuntimeInfo | null>(null)
 
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
@@ -155,14 +157,16 @@ export default function App() {
   }
 
   async function refresh(): Promise<void> {
-    const [providerList, appData, activeStatuses] = await Promise.all([
+    const [providerList, appData, activeStatuses, runtime] = await Promise.all([
       window.api.getProviders(),
       window.api.getAppData(),
-      window.api.getActiveStatuses()
+      window.api.getActiveStatuses(),
+      window.api.getRuntimeInfo()
     ])
     setProviders(providerList)
     setData(appData)
     setStatuses(activeStatuses)
+    setRuntimeInfo(runtime)
     setSelectedProviderId((current) => current ?? providerList[0]?.id ?? null)
     await Promise.all([refreshQuotas(appData.accounts), refreshLoginStatuses(appData.accounts)])
   }
@@ -438,6 +442,15 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {runtimeInfo?.env === 'development' && (
+          <div className="dev-banner">
+            <strong>Development</strong>
+            <span>
+              Dữ liệu: {runtimeInfo.appDataDir} · Codex: {runtimeInfo.codexHome}
+              {!runtimeInfo.applyAntigravityIde ? ' · IDE sync: tắt' : ''}
+            </span>
+          </div>
+        )}
         {!selectedProvider || !selectedProviderId ? (
           <div className="empty-state">Chọn provider từ sidebar.</div>
         ) : (
@@ -445,7 +458,7 @@ export default function App() {
             <div className="header">
               <div>
                 <h2>{selectedProvider.name}</h2>
-                <p>{providerDescription(selectedProviderId)}</p>
+                <p>{providerDescription(selectedProviderId, selectedProvider.configDir)}</p>
                 <div className="header-meta">Config: {selectedProvider.configDir}</div>
               </div>
 

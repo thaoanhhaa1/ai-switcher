@@ -8,6 +8,7 @@ release/
 
 # Local app data (accounts, sessions, API keys)
 .ai-switcher/
+.ai-switcher-dev/
 
 # Logs
 *.log

@@ -149,7 +149,16 @@ export interface AccountQuota {
   updatedAt: string
 }
 
+export interface AppRuntimeInfo {
+  env: 'development' | 'production'
+  appDataDir: string
+  codexHome: string
+  opencodeConfigDir: string
+  applyAntigravityIde: boolean
+}
+
 export interface Api {
+  getRuntimeInfo: () => Promise<AppRuntimeInfo>
   getProviders: () => Promise<ProviderInfo[]>
   getAppData: () => Promise<AppData>
   getActiveStatuses: () => Promise<ActiveStatuses>

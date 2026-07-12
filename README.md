@@ -129,8 +129,20 @@ Nếu chưa cài global, app tự tìm binary tại các vị trí sau (theo th�
 
 ```bash
 npm install
+cp .env.example .env.development   # tùy chọn
 npm run dev
 ```
+
+**Dev mode** (`npm run dev`) dùng sandbox riêng, không đụng config production:
+
+| Mục | Development | Production (app đã build) |
+|-----|-------------|---------------------------|
+| App data | `~/.ai-switcher-dev/` | `~/.ai-switcher/` |
+| Codex live | `~/.ai-switcher-dev/.codex/` | `~/.codex/` |
+| OpenCode | `~/.ai-switcher-dev/opencode/` | `~/.config/opencode/` |
+| Antigravity IDE | Bỏ qua (trừ khi bật flag) | Đồng bộ `state.vscdb` |
+
+Override bằng biến môi trường trong `.env.development` / `.env.production` (xem `.env.example`).
 
 ## Build app
 
@@ -146,6 +158,8 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 
 ## Dữ liệu lưu trữ
 
+**Production** (`npm run package`):
+
 | Đường dẫn | Mô tả |
 |-----------|--------|
 | `~/.ai-switcher/data.json` | Danh sách tài khoản, lịch sử sử dụng |
@@ -153,6 +167,8 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 | `~/.ai-switcher/codex-auth/{id}.json` | Snapshot auth ChatGPT OAuth |
 | `~/.ai-switcher/antigravity-auth/{id}.json` | Snapshot Google OAuth Antigravity |
 | `~/.config/opencode/antigravity-accounts.json` | Config live Antigravity (OpenCode) |
+
+**Development** (`npm run dev`): cùng cấu trúc nhưng nằm dưới `~/.ai-switcher-dev/` (Codex/OpenCode sandbox trong thư mục đó).
 
 ## Hướng dẫn sử dụng
 
