@@ -74,6 +74,22 @@ export function isChatGptAuth(auth: CodexAuthJson | null): auth is CodexAuthJson
   return Boolean(auth?.tokens?.access_token && auth?.tokens?.account_id)
 }
 
+export function normalizeChatGptAuthForLive(
+  auth: CodexAuthJson & { tokens: CodexAuthTokens }
+): CodexAuthJson {
+  return {
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: auth.tokens.id_token,
+      access_token: auth.tokens.access_token,
+      refresh_token: auth.tokens.refresh_token,
+      account_id: auth.tokens.account_id
+    },
+    last_refresh: auth.last_refresh ?? new Date().toISOString()
+  }
+}
+
 export function parseChatGptIdentity(auth: CodexAuthJson): ChatGptIdentity {
   if (!auth.tokens?.id_token) {
     return {

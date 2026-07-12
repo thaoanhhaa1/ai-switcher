@@ -29,8 +29,7 @@ Khi chuyển sang một tài khoản, app ghi vào `~/.codex/`. Chỉ **một** 
 
 ```json
 {
-  "OPENAI_API_KEY": "your_freemodel_key",
-  "FREEMODEL_API_KEY": "your_freemodel_key"
+  "OPENAI_API_KEY": "YOUR_API_KEY"
 }
 ```
 
@@ -38,7 +37,7 @@ Khi chuyển sang một tài khoản, app ghi vào `~/.codex/`. Chỉ **một** 
 
 ```toml
 model_provider = "freemodel"
-model = "gpt-5.5-codex"
+model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 preferred_auth_method = "apikey"
@@ -47,8 +46,6 @@ preferred_auth_method = "apikey"
 name = "freemodel"
 base_url = "https://api.freemodel.dev"
 wire_api = "responses"
-requires_openai_auth = false
-env_key = "FREEMODEL_API_KEY"
 ```
 
 Tham khảo: [FreeModel Codex docs](https://freemodel.dev/dashboard/docs#codex)
@@ -60,22 +57,20 @@ Tham khảo: [FreeModel Codex docs](https://freemodel.dev/dashboard/docs#codex)
 ```json
 {
   "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
   "tokens": {
+    "id_token": "...",
     "access_token": "...",
-    "account_id": "...",
-    "id_token": "..."
-  }
+    "refresh_token": "...",
+    "account_id": "..."
+  },
+  "last_refresh": "2026-07-12T05:37:34.677019Z"
 }
 ```
 
 **`~/.codex/config.toml`**
 
-```toml
-model = "gpt-5.4"
-model_reasoning_effort = "xhigh"
-cli_auth_credentials_store = "file"
-preferred_auth_method = "chatgpt"
-```
+Trên macOS, khi chuyển từ FreeModel (hoặc lần đầu), app ghi cấu hình Codex desktop (plugins, MCP servers, desktop settings). Khi chuyển giữa các tài khoản ChatGPT, `config.toml` hiện có được giữ nguyên — chỉ `auth.json` thay đổi.
 
 Tham khảo: [Codex auth docs](https://developers.openai.com/codex/auth)
 

@@ -1,13 +1,16 @@
+import { existsSync } from 'fs'
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { mkdtemp } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import TOML from '@iarna/toml'
 import type { Account, AccountQuota, CodexFreeModelSettings } from '../../src/types'
 import { runCodexLogin } from '../codex-cli'
 import {
   deleteStoredAuth,
   isChatGptAuth,
   loadStoredAuth,
+  normalizeChatGptAuthForLive,
   parseChatGptIdentity,
   readLiveAuth,
   saveStoredAuth,
@@ -98,13 +101,131 @@ function buildEmptyQuota(message?: string): AccountQuota {
   }
 }
 
-function buildConfigToml(settings: CodexFreeModelSettings): string {
-  return [
-    `model = "${settings.model}"`,
-    `model_reasoning_effort = "${settings.modelReasoningEffort}"`,
-    'cli_auth_credentials_store = "file"',
-    'preferred_auth_method = "chatgpt"'
-  ].join('\n')
+type TomlRecord = Record<string, unknown>
+
+const CHATGPT_APP_PATH = '/Applications/ChatGPT.app'
+const CHATGPT_CODEX_CLI_PATH = join(CHATGPT_APP_PATH, 'Contents/Resources/codex')
+const CHATGPT_NODE_REPL_PATH = join(
+  CHATGPT_APP_PATH,
+  'Contents/Resources/cua_node/bin/node_repl'
+)
+
+function formatTomlTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function getComputerUseNotifyPath(codexHome: string): string | null {
+  const clientPath = join(
+    codexHome,
+    'computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient'
+  )
+  return existsSync(clientPath) ? clientPath : null
+}
+
+function isFreemodelCodexConfig(raw: string): boolean {
+  try {
+    const parsed = TOML.parse(raw) as TomlRecord
+    return parsed.model_provider === 'freemodel' || parsed.preferred_auth_method === 'apikey'
+  } catch {
+    return false
+  }
+}
+
+function buildChatGptDesktopConfigToml(codexHome: string): string {
+  const notifyPath = getComputerUseNotifyPath(codexHome)
+  const hasChatGptApp = existsSync(CHATGPT_CODEX_CLI_PATH)
+  const doc: TomlRecord = {}
+
+  if (notifyPath) {
+    doc.notify = [notifyPath, 'turn-ended']
+  }
+
+  doc.marketplaces = {
+    'openai-bundled': {
+      last_updated: formatTomlTimestamp(),
+      source_type: 'local',
+      source: join(codexHome, '.tmp/bundled-marketplaces/openai-bundled')
+    }
+  }
+
+  doc.plugins = {
+    'visualize@openai-bundled': { enabled: true },
+    'google-calendar@openai-curated': { enabled: true },
+    'slack@openai-curated': { enabled: true },
+    'browser@openai-bundled': { enabled: true }
+  }
+
+  doc.features = {
+    js_repl: false
+  }
+
+  if (hasChatGptApp) {
+    doc.mcp_servers = {
+      node_repl: {
+        args: [],
+        command: CHATGPT_NODE_REPL_PATH,
+        startup_timeout_sec: 120,
+        env: {
+          NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS: '1000',
+          NODE_REPL_NODE_MODULE_DIRS: join(
+            CHATGPT_APP_PATH,
+            'Contents/Resources/cua_node/lib/node_modules'
+          ),
+          NODE_REPL_NODE_PATH: join(
+            CHATGPT_APP_PATH,
+            'Contents/Resources/cua_node/bin/node'
+          ),
+          NODE_REPL_TRUSTED_CODE_PATHS: codexHome,
+          CODEX_HOME: codexHome,
+          NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S:
+            '6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f,e74b67ab909392b37f7aef14977fce7aa80cfa02ade5491f30abcdbcb9e69f33',
+          BROWSER_USE_AVAILABLE_BACKENDS: 'chrome,iab',
+          NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER:
+            'Control the in-app browser in conjunction with the Browser Plugin.',
+          NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME:
+            'Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative.',
+          NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE:
+            'Control desktop apps on macOS through Computer Use.',
+          BROWSER_USE_CODEX_APP_BUILD_FLAVOR: 'prod',
+          CODEX_CLI_PATH: CHATGPT_CODEX_CLI_PATH
+        }
+      },
+      'computer-use': {
+        command:
+          './Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient',
+        args: ['mcp'],
+        cwd: '.',
+        enabled: false
+      }
+    }
+  }
+
+  doc.desktop = {
+    conversationDetailMode: 'STEPS_COMMANDS',
+    'ambient-suggestions-enabled': true
+  }
+
+  return TOML.stringify(doc as TOML.JsonMap)
+}
+
+function buildChatGptConfigToml(codexHome: string): string {
+  if (process.platform === 'darwin') {
+    return buildChatGptDesktopConfigToml(codexHome)
+  }
+
+  return TOML.stringify({
+    cli_auth_credentials_store: 'file',
+    preferred_auth_method: 'chatgpt'
+  } as TOML.JsonMap)
+}
+
+async function shouldWriteChatGptConfig(): Promise<boolean> {
+  try {
+    const raw = await readFile(getCodexConfigPath(), 'utf-8')
+    return isFreemodelCodexConfig(raw)
+  } catch {
+    return true
+  }
 }
 
 export async function importChatGptAuthFromLive(accountId: string): Promise<CodexAuthJson> {
@@ -166,9 +287,13 @@ export async function applyCodexChatGptAccount(account: Account): Promise<void> 
     throw new Error('Tài khoản ChatGPT chưa đăng nhập. Hãy login hoặc import auth.json')
   }
 
-  await mkdir(getCodexHome(), { recursive: true })
-  await writeLiveAuth(auth)
-  await writeFile(getCodexConfigPath(), buildConfigToml(account.settings), 'utf-8')
+  const codexHome = getCodexHome()
+  await mkdir(codexHome, { recursive: true })
+  await writeLiveAuth(normalizeChatGptAuthForLive(auth))
+
+  if (await shouldWriteChatGptConfig()) {
+    await writeFile(getCodexConfigPath(), buildChatGptConfigToml(codexHome), 'utf-8')
+  }
 }
 
 export async function readLiveChatGptAccountId(): Promise<string | null> {
