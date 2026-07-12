@@ -50,7 +50,7 @@ function providerDescription(provider: ProviderId): string {
   if (provider === 'codex-chatgpt') {
     return 'Quản lý tài khoản ChatGPT OAuth cho Codex CLI. Ghi config vào ~/.codex.'
   }
-  return 'Quản lý Google OAuth cho Antigravity (Claude/Gemini). Ghi vào ~/.config/opencode.'
+  return 'Quản lý Google OAuth cho Antigravity (OpenCode + IDE). Ghi vào ~/.config/opencode và Antigravity IDE.'
 }
 
 function authModeLabel(mode?: ActiveConfigStatus['authMode']): string {

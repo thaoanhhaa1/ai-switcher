@@ -13,6 +13,7 @@ import {
   type AntigravityAccountEntry,
   type AntigravityAccountsFile
 } from '../antigravity-auth-storage'
+import { applyAntigravityIdeAccount } from '../antigravity-ide'
 import { runAntigravityOAuthLogin } from '../antigravity-oauth'
 import { getAntigravityAccountsPath, getOpencodeConfigDir } from '../paths'
 import { formatResetAt, formatResetLabelFromTimestamp } from '../quota-utils'
@@ -102,7 +103,12 @@ async function postJson(url: string, token: string, body: unknown, extraHeaders:
   })
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<string> {
+interface RefreshedGoogleToken {
+  accessToken: string
+  expiresIn: number
+}
+
+async function refreshGoogleToken(refreshToken: string): Promise<RefreshedGoogleToken> {
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: {
@@ -121,11 +127,14 @@ async function refreshAccessToken(refreshToken: string): Promise<string> {
     throw new Error(`Token refresh failed (${response.status}): ${text.slice(0, 200)}`)
   }
 
-  const payload = (await response.json()) as { access_token?: string }
+  const payload = (await response.json()) as { access_token?: string; expires_in?: number }
   if (!payload.access_token) {
     throw new Error('Token refresh không trả về access_token')
   }
-  return payload.access_token
+  return {
+    accessToken: payload.access_token,
+    expiresIn: payload.expires_in ?? 3600
+  }
 }
 
 async function loadProjectId(accessToken: string): Promise<string> {
@@ -242,6 +251,15 @@ export async function buildLiveAccountsFile(activeAccountId: string): Promise<An
 export async function applyAntigravityAccount(account: Account): Promise<void> {
   const live = await buildLiveAccountsFile(account.id)
   await writeLiveAntigravityAccounts(live)
+
+  const activeIndex = live.activeIndex ?? 0
+  const activeEntry = normalizeAntigravityEntry(live.accounts[activeIndex])
+  if (!isValidAntigravityEntry(activeEntry)) {
+    return
+  }
+
+  const tokens = await refreshGoogleToken(activeEntry.refreshToken)
+  await applyAntigravityIdeAccount(activeEntry, tokens)
 }
 
 export async function snapshotLiveAntigravityToAccount(accountId: string): Promise<void> {
@@ -322,7 +340,7 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
   }
 
   try {
-    const accessToken = await refreshAccessToken(entry.refreshToken)
+    const { accessToken } = await refreshGoogleToken(entry.refreshToken)
     let projectId = await loadProjectId(accessToken)
     if (!projectId) {
       projectId = entry.managedProjectId ?? entry.projectId ?? FALLBACK_PROJECT_ID

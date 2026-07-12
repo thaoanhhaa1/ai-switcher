@@ -14,7 +14,7 @@ Hiện hỗ trợ:
 
 - Thêm / sửa / xóa nhiều tài khoản (Codex FreeModel, Codex ChatGPT, Antigravity)
 - Chuyển tài khoản active chỉ với một click
-- Tự động ghi `~/.codex/` hoặc `~/.config/opencode/antigravity-accounts.json`
+- Tự động ghi `~/.codex/`, `~/.config/opencode/antigravity-accounts.json`, và Antigravity IDE `state.vscdb`
 - Theo dõi quota theo từng tài khoản
 - Đăng nhập FreeModel qua OTP, ChatGPT qua `codex login`, Antigravity qua `opencode auth login`
 - Import auth từ file hoặc config live
@@ -74,9 +74,9 @@ Trên macOS, khi chuyển từ FreeModel (hoặc lần đầu), app ghi cấu h�
 
 Tham khảo: [Codex auth docs](https://developers.openai.com/codex/auth)
 
-### Antigravity (Google OAuth via OpenCode)
+### Antigravity (Google OAuth via OpenCode + Antigravity IDE)
 
-**`~/.config/opencode/antigravity-accounts.json`**
+**OpenCode — `~/.config/opencode/antigravity-accounts.json`**
 
 ```json
 {
@@ -94,6 +94,10 @@ Tham khảo: [Codex auth docs](https://developers.openai.com/codex/auth)
 ```
 
 Cần cài [OpenCode CLI](https://opencode.ai) và plugin `opencode-antigravity-auth`.
+
+**Antigravity IDE — `~/Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb`**
+
+Khi chuyển tài khoản, app cũng inject OAuth token vào SQLite database của Antigravity IDE. Nếu IDE đang mở, app sẽ tự đóng và mở lại IDE để áp dụng.
 
 Tham khảo: [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth)
 
