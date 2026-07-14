@@ -75,8 +75,10 @@ import {
 } from './paths';
 import {
     appendUsageEvent,
+    CODEX_PROVIDERS,
     findAccount,
     getActiveAccountIdForProvider,
+    isCodexProvider,
     loadAppData,
     saveAppData,
     withActiveAccountForProvider,
@@ -177,19 +179,27 @@ async function snapshotActiveAccountAuth(
     data: AppData,
     provider: ProviderId,
 ): Promise<void> {
-    const activeId = getActiveAccountIdForProvider(data, provider);
-    if (!activeId) return;
+    // Codex providers share ~/.codex — snapshot whichever Codex account is currently live.
+    const providersToSnapshot = isCodexProvider(provider)
+        ? CODEX_PROVIDERS
+        : [provider];
 
-    const active = findAccount(data, activeId);
-    if (!active) return;
+    for (const snapshotProvider of providersToSnapshot) {
+        const activeId = getActiveAccountIdForProvider(data, snapshotProvider);
+        if (!activeId) continue;
 
-    if (active.provider === 'codex-chatgpt') {
-        await snapshotLiveAuthToAccount(active.id);
-        return;
-    }
+        const active = findAccount(data, activeId);
+        if (!active) continue;
 
-    if (active.provider === 'antigravity') {
-        await snapshotLiveAntigravityToAccount(active.id);
+        if (active.provider === 'codex-chatgpt') {
+            await snapshotLiveAuthToAccount(active.id);
+            return;
+        }
+
+        if (active.provider === 'antigravity') {
+            await snapshotLiveAntigravityToAccount(active.id);
+            return;
+        }
     }
 }
 
