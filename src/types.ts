@@ -1,4 +1,4 @@
-export type ProviderId = 'codex-freemodel' | 'codex-chatgpt' | 'antigravity'
+export type ProviderId = 'codex-freemodel' | 'codex-chatgpt' | 'antigravity' | 'github-copilot'
 
 export interface CodexSettings {
   model: string
@@ -21,6 +21,7 @@ export interface Account {
   chatgptEmail?: string
   chatgptAccountId?: string
   antigravityEmail?: string
+  copilotUsername?: string
   planType?: string
 }
 
@@ -44,6 +45,13 @@ export interface AntigravityLoginStatus {
   loggedIn: boolean
   email?: string
   projectId?: string
+  message?: string
+}
+
+export interface CopilotLoginStatus {
+  loggedIn: boolean
+  username?: string
+  targets?: string[]
   message?: string
 }
 
@@ -82,7 +90,7 @@ export interface ActiveConfigStatus {
   codexHome: string
   configExists: boolean
   authExists: boolean
-  authMode?: 'apikey' | 'chatgpt' | 'google-oauth' | 'unknown'
+  authMode?: 'apikey' | 'chatgpt' | 'google-oauth' | 'github-oauth' | 'unknown'
 }
 
 export interface ValidateKeyResult {
@@ -175,6 +183,7 @@ export interface AppRuntimeInfo {
   codexHome: string
   opencodeConfigDir: string
   applyAntigravityIde: boolean
+  applyCopilotIde: boolean
 }
 
 export interface Api {
@@ -224,8 +233,14 @@ export interface Api {
   importAntigravityFromFile: (accountId: string, filePath: string) => Promise<AntigravityLoginStatus>
   logoutAntigravity: (accountId: string) => Promise<void>
   pickAntigravityAccountsFile: () => Promise<string | null>
+  getCopilotLoginStatus: (accountId: string) => Promise<CopilotLoginStatus>
+  importCopilotFromLive: (accountId: string) => Promise<CopilotLoginStatus>
+  importCopilotFromFile: (accountId: string, filePath: string) => Promise<CopilotLoginStatus>
+  logoutCopilot: (accountId: string) => Promise<void>
+  pickCopilotSnapshotFile: () => Promise<string | null>
   openCodexDir: () => Promise<void>
   openAntigravityDir: () => Promise<void>
+  openCopilotDir: () => Promise<void>
   openDocs: (provider: ProviderId) => Promise<void>
 }
 

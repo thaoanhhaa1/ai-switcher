@@ -1,6 +1,7 @@
+import './load-env'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'path'
-import { isDev, shouldApplyAntigravityIde, type AppRuntimeInfo } from './env'
+import { isDev, shouldApplyAntigravityIde, shouldApplyCopilotIde, type AppRuntimeInfo } from './env'
 import {
   addAccount,
   deleteAccount,
@@ -15,17 +16,23 @@ import {
   importChatGptLiveAccount,
   importAntigravityFileAccount,
   importAntigravityLiveAccount,
+  importCopilotFileAccount,
+  importCopilotLiveAccount,
   loginAntigravityAccount,
   loginChatGptAccount,
   logoutAccount,
   logoutAntigravityAccount,
   logoutChatGptAccount,
+  logoutCopilotAccount,
   openAntigravityDir,
   openCodexDir,
+  openCopilotDir,
   openDocs,
   pickAntigravityAccountsFile,
   pickAuthJsonFile,
+  pickCopilotSnapshotFile,
   getAntigravityStatus,
+  getCopilotStatus,
   sendAccountOtp,
   switchAccount,
   updateAccount,
@@ -41,7 +48,8 @@ function getRuntimeInfo(): AppRuntimeInfo {
     appDataDir: getAppDataDir(),
     codexHome: getCodexHome(),
     opencodeConfigDir: getOpencodeConfigDir(),
-    applyAntigravityIde: shouldApplyAntigravityIde()
+    applyAntigravityIde: shouldApplyAntigravityIde(),
+    applyCopilotIde: shouldApplyCopilotIde()
   }
 }
 
@@ -113,8 +121,16 @@ function registerIpc(): void {
   )
   ipcMain.handle('antigravity:logout', (_event, accountId) => logoutAntigravityAccount(accountId))
   ipcMain.handle('antigravity:pickAccountsFile', () => pickAntigravityAccountsFile())
+  ipcMain.handle('copilot:loginStatus', (_event, accountId) => getCopilotStatus(accountId))
+  ipcMain.handle('copilot:importLive', (_event, accountId) => importCopilotLiveAccount(accountId))
+  ipcMain.handle('copilot:importFile', (_event, accountId, filePath) =>
+    importCopilotFileAccount(accountId, filePath)
+  )
+  ipcMain.handle('copilot:logout', (_event, accountId) => logoutCopilotAccount(accountId))
+  ipcMain.handle('copilot:pickSnapshotFile', () => pickCopilotSnapshotFile())
   ipcMain.handle('codex:openDir', () => openCodexDir())
   ipcMain.handle('antigravity:openDir', () => openAntigravityDir())
+  ipcMain.handle('copilot:openDir', () => openCopilotDir())
   ipcMain.handle('docs:open', (_event, provider) => openDocs(provider))
 }
 
@@ -131,6 +147,9 @@ app.whenReady().then(() => {
     console.info(`  opencode: ${runtime.opencodeConfigDir}`)
     if (!runtime.applyAntigravityIde) {
       console.info('  antigravity IDE sync: disabled')
+    }
+    if (!runtime.applyCopilotIde) {
+      console.info('  copilot IDE sync: disabled')
     }
   }
 

@@ -10,6 +10,7 @@ import type {
     AppData,
     ChatGptLoginStatus,
     CodexSettings,
+    CopilotLoginStatus,
     FreeModelLoginStatus,
     ProviderId,
     ProviderInfo,
@@ -67,11 +68,27 @@ import {
     snapshotLiveAntigravityToAccount,
 } from './providers/antigravity';
 import {
+    COPILOT_DOCS,
+    applyCopilotAccount,
+    clearCopilotAuth,
+    DEFAULT_COPILOT_SETTINGS,
+    fetchCopilotQuota,
+    getCopilotConfigDirPath,
+    getCopilotLoginStatus,
+    importCopilotFromFile,
+    importCopilotFromLive,
+    readLiveCopilotUsernameForStatus,
+    snapshotLiveCopilotToAccount,
+} from './providers/github-copilot';
+import { isValidCopilotEntry, loadStoredCopilotAccount } from './copilot-auth-storage';
+import { hasLiveCopilotAuth } from './copilot-ide';
+import {
     getAntigravityAccountsPath,
     getAntigravityConfigPath,
     getCodexAuthPath,
     getCodexConfigPath,
     getCodexHome,
+    getCopilotConfigDir,
     getOpencodeConfigDir,
 } from './paths';
 import {
@@ -107,6 +124,13 @@ const PROVIDERS: ProviderInfo[] = [
         configDir: getOpencodeConfigDir(),
         docsUrl: ANTIGRAVITY_DOCS,
     },
+    {
+        id: 'github-copilot',
+        name: 'GitHub Copilot',
+        toolName: 'VS Code',
+        configDir: getCopilotConfigDir(),
+        docsUrl: COPILOT_DOCS,
+    },
 ];
 
 async function fileExists(path: string): Promise<boolean> {
@@ -121,6 +145,7 @@ async function fileExists(path: string): Promise<boolean> {
 function defaultSettings(provider: ProviderId): CodexSettings {
     if (provider === 'codex-chatgpt') return { ...DEFAULT_CHATGPT_SETTINGS };
     if (provider === 'antigravity') return { ...DEFAULT_ANTIGRAVITY_SETTINGS };
+    if (provider === 'github-copilot') return { ...DEFAULT_COPILOT_SETTINGS };
     return { ...DEFAULT_CODEX_SETTINGS };
 }
 
@@ -143,6 +168,29 @@ function buildUnavailableQuota(message: string): AccountQuota {
         weekly: emptyWindow,
         updatedAt: new Date().toISOString(),
     };
+}
+
+async function persistCopilotIdentity(
+    accountId: string,
+    identity: { username?: string },
+): Promise<Account | null> {
+    const data = await loadAppData();
+    const account = findAccount(data, accountId);
+    if (!account) return null;
+
+    const updated: Account = {
+        ...account,
+        copilotUsername: identity.username ?? account.copilotUsername,
+    };
+
+    const next: AppData = {
+        ...data,
+        accounts: data.accounts.map((item) =>
+            item.id === accountId ? updated : item,
+        ),
+    };
+    await saveAppData(next);
+    return updated;
 }
 
 async function persistAntigravityIdentity(
@@ -222,6 +270,13 @@ async function snapshotActiveAccountAuth(
             await snapshotLiveAntigravityToAccount(active.id);
             return;
         }
+
+        if (active.provider === 'github-copilot') {
+            await snapshotLiveCopilotToAccount(
+                active.id,
+                active.copilotUsername ?? undefined,
+            );
+        }
     }
 }
 
@@ -241,6 +296,19 @@ async function buildActiveStatusFromAccount(
             configExists: await fileExists(getAntigravityConfigPath()),
             authExists: await fileExists(getAntigravityAccountsPath()),
             authMode: 'google-oauth',
+        };
+    }
+
+    if (active.provider === 'github-copilot') {
+        const stored = await loadStoredCopilotAccount(active.id);
+        return {
+            provider: 'github-copilot',
+            accountId: active.id,
+            accountName: active.name,
+            codexHome: getCopilotConfigDirPath(),
+            configExists: await fileExists(getCopilotConfigDirPath()),
+            authExists: isValidCopilotEntry(stored),
+            authMode: 'github-oauth',
         };
     }
 
@@ -282,6 +350,18 @@ async function getInactiveStatus(
             configExists: await fileExists(getAntigravityConfigPath()),
             authExists: await fileExists(getAntigravityAccountsPath()),
             authMode: 'google-oauth',
+        };
+    }
+
+    if (provider === 'github-copilot') {
+        return {
+            provider: 'github-copilot',
+            accountId: null,
+            accountName: null,
+            codexHome: getCopilotConfigDirPath(),
+            configExists: await fileExists(getCopilotConfigDirPath()),
+            authExists: await hasLiveCopilotAuth(),
+            authMode: 'github-oauth',
         };
     }
 
@@ -327,6 +407,24 @@ export async function getActiveStatusForProvider(
         }
 
         return getInactiveStatus('antigravity');
+    }
+
+    if (provider === 'github-copilot') {
+        const liveUsername = await readLiveCopilotUsernameForStatus();
+        if (liveUsername) {
+            const matched = appData.accounts.find(
+                (account) =>
+                    account.provider === 'github-copilot' &&
+                    account.copilotUsername?.toLowerCase() ===
+                        liveUsername.toLowerCase(),
+            );
+
+            if (matched) {
+                return buildActiveStatusFromAccount(matched);
+            }
+        }
+
+        return getInactiveStatus('github-copilot');
     }
 
     const configExists = await fileExists(getCodexConfigPath());
@@ -385,6 +483,7 @@ const ALL_PROVIDERS: ProviderId[] = [
     'codex-freemodel',
     'codex-chatgpt',
     'antigravity',
+    'github-copilot',
 ];
 
 export async function getActiveStatuses(
@@ -487,6 +586,8 @@ export async function updateAccount(
             await applyCodexChatGptAccount(updated);
         } else if (updated.provider === 'antigravity') {
             await applyAntigravityAccount(updated);
+        } else if (updated.provider === 'github-copilot') {
+            await applyCopilotAccount(updated);
         }
     }
 
@@ -524,6 +625,7 @@ export async function deleteAccount(id: string): Promise<AppData> {
     await clearFreeModelSession(id);
     await clearChatGptAuth(id);
     await clearAntigravityAuth(id);
+    await clearCopilotAuth(id);
 
     return appendUsageEvent(next, {
         accountId: existing.id,
@@ -552,6 +654,8 @@ export async function switchAccount(
         await applyCodexChatGptAccount(account);
     } else if (account.provider === 'antigravity') {
         await applyAntigravityAccount(account);
+    } else if (account.provider === 'github-copilot') {
+        await applyCopilotAccount(account);
     }
 
     const updatedAccount: Account = {
@@ -601,6 +705,13 @@ export async function validateApiKey(
         };
     }
 
+    if (provider === 'github-copilot') {
+        return {
+            valid: false,
+            message: 'GitHub Copilot dùng OAuth qua VS Code/Cursor, không dùng API key',
+        };
+    }
+
     return { valid: false, message: 'ChatGPT dùng OAuth, không dùng API key' };
 }
 
@@ -643,6 +754,21 @@ export async function getProviderOptions(
         };
     }
 
+    if (provider === 'github-copilot') {
+        return {
+            models: [
+                { id: 'default', ownedBy: 'github' },
+                { id: 'gpt-4o', ownedBy: 'openai' },
+                { id: 'claude-sonnet-4', ownedBy: 'anthropic' },
+            ],
+            reasoningEfforts: [
+                { value: 'low', label: 'low' },
+                { value: 'medium', label: 'medium' },
+                { value: 'high', label: 'high' },
+            ],
+        };
+    }
+
     throw new Error('Provider chưa được hỗ trợ');
 }
 
@@ -666,6 +792,10 @@ export async function getAccountQuota(
 
     if (provider === 'antigravity') {
         return fetchAntigravityQuota(accountId);
+    }
+
+    if (provider === 'github-copilot') {
+        return fetchCopilotQuota(accountId);
     }
 
     throw new Error('Provider chưa được hỗ trợ');
@@ -850,6 +980,47 @@ export async function logoutAntigravityAccount(
     await clearAntigravityAuth(accountId);
 }
 
+export async function getCopilotStatus(
+    accountId: string,
+): Promise<CopilotLoginStatus> {
+    return getCopilotLoginStatus(accountId);
+}
+
+export async function importCopilotLiveAccount(
+    accountId: string,
+): Promise<CopilotLoginStatus> {
+    const status = await importCopilotFromLive(accountId);
+    await persistCopilotIdentity(accountId, { username: status.username });
+    return status;
+}
+
+export async function importCopilotFileAccount(
+    accountId: string,
+    filePath: string,
+): Promise<CopilotLoginStatus> {
+    const status = await importCopilotFromFile(accountId, filePath);
+    await persistCopilotIdentity(accountId, { username: status.username });
+    return status;
+}
+
+export async function logoutCopilotAccount(accountId: string): Promise<void> {
+    await clearCopilotAuth(accountId);
+}
+
+export async function pickCopilotSnapshotFile(): Promise<string | null> {
+    const result = await dialog.showOpenDialog({
+        title: 'Chọn file snapshot Copilot',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+
+    if (result.canceled || !result.filePaths.length) {
+        return null;
+    }
+
+    return result.filePaths[0];
+}
+
 export async function pickAuthJsonFile(): Promise<string | null> {
     const result = await dialog.showOpenDialog({
         title: 'Chọn file auth.json',
@@ -884,6 +1055,10 @@ export async function openCodexDir(): Promise<void> {
 
 export async function openAntigravityDir(): Promise<void> {
     await shell.openPath(getOpencodeConfigDir());
+}
+
+export async function openCopilotDir(): Promise<void> {
+    await shell.openPath(getCopilotConfigDir());
 }
 
 export async function openDocs(provider: ProviderId): Promise<void> {

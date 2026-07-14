@@ -8,6 +8,7 @@ import type {
   AppData,
   AppRuntimeInfo,
   ChatGptLoginStatus,
+  CopilotLoginStatus,
   FreeModelLoginStatus,
   ProviderId,
   ProviderInfo
@@ -15,6 +16,8 @@ import type {
 import { AccountDialog } from './components/AccountDialog'
 import { AntigravityAccountDialog } from './components/AntigravityAccountDialog'
 import { AntigravityLoginDialog } from './components/AntigravityLoginDialog'
+import { CopilotAccountDialog } from './components/CopilotAccountDialog'
+import { CopilotLoginDialog } from './components/CopilotLoginDialog'
 import { ChatGptAccountDialog } from './components/ChatGptAccountDialog'
 import { ChatGptLoginDialog } from './components/ChatGptLoginDialog'
 import { FreeModelLoginDialog } from './components/FreeModelLoginDialog'
@@ -35,12 +38,14 @@ function maskKey(key: string): string {
 function providerLabel(provider: ProviderId): string {
   if (provider === 'codex-chatgpt') return 'ChatGPT'
   if (provider === 'antigravity') return 'Antigravity'
+  if (provider === 'github-copilot') return 'Copilot'
   return 'FreeModel'
 }
 
 function providerShortLabel(provider: ProviderId): string {
   if (provider === 'codex-freemodel') return 'Codex + FreeModel'
   if (provider === 'codex-chatgpt') return 'Codex + ChatGPT'
+  if (provider === 'github-copilot') return 'GitHub Copilot'
   return 'Antigravity'
 }
 
@@ -51,11 +56,14 @@ function providerDescription(provider: ProviderId, configDir: string): string {
   if (provider === 'codex-chatgpt') {
     return `Quản lý tài khoản ChatGPT OAuth cho Codex CLI. Ghi config vào ${configDir}.`
   }
+  if (provider === 'github-copilot') {
+    return `Quản lý tài khoản GitHub Copilot cho VS Code. Ghi auth vào state.vscdb (${configDir}).`
+  }
   return 'Quản lý Google OAuth cho Antigravity (OpenCode + IDE). Ghi vào thư mục OpenCode và Antigravity IDE (prod).'
 }
 
 function authModeLabel(mode?: ActiveConfigStatus['authMode']): string {
-  if (mode === 'chatgpt' || mode === 'google-oauth') return 'OAuth'
+  if (mode === 'chatgpt' || mode === 'google-oauth' || mode === 'github-oauth') return 'OAuth'
   if (mode === 'apikey') return 'API key'
   return '—'
 }
@@ -75,6 +83,7 @@ export default function App() {
   const [freeModelLogins, setFreeModelLogins] = useState<Record<string, FreeModelLoginStatus>>({})
   const [chatGptLogins, setChatGptLogins] = useState<Record<string, ChatGptLoginStatus>>({})
   const [antigravityLogins, setAntigravityLogins] = useState<Record<string, AntigravityLoginStatus>>({})
+  const [copilotLogins, setCopilotLogins] = useState<Record<string, CopilotLoginStatus>>({})
   const [loginAccount, setLoginAccount] = useState<Account | null>(null)
   const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set())
   const [usageLogVisible, setUsageLogVisible] = useState(true)
@@ -102,6 +111,7 @@ export default function App() {
       setFreeModelLogins({})
       setChatGptLogins({})
       setAntigravityLogins({})
+      setCopilotLogins({})
       return
     }
 
@@ -109,16 +119,21 @@ export default function App() {
       accounts.map(async (account) => {
         if (account.provider === 'codex-chatgpt') {
           const loginStatus = await window.api.getChatGptLoginStatus(account.id)
-          return { id: account.id, freeModel: null, chatGpt: loginStatus, antigravity: null }
+          return { id: account.id, freeModel: null, chatGpt: loginStatus, antigravity: null, copilot: null }
         }
 
         if (account.provider === 'antigravity') {
           const loginStatus = await window.api.getAntigravityLoginStatus(account.id)
-          return { id: account.id, freeModel: null, chatGpt: null, antigravity: loginStatus }
+          return { id: account.id, freeModel: null, chatGpt: null, antigravity: loginStatus, copilot: null }
+        }
+
+        if (account.provider === 'github-copilot') {
+          const loginStatus = await window.api.getCopilotLoginStatus(account.id)
+          return { id: account.id, freeModel: null, chatGpt: null, antigravity: null, copilot: loginStatus }
         }
 
         const loginStatus = await window.api.getFreeModelLoginStatus(account.id)
-        return { id: account.id, freeModel: loginStatus, chatGpt: null, antigravity: null }
+        return { id: account.id, freeModel: loginStatus, chatGpt: null, antigravity: null, copilot: null }
       })
     )
 
@@ -135,6 +150,11 @@ export default function App() {
     setAntigravityLogins(
       Object.fromEntries(
         entries.filter((item) => item.antigravity).map((item) => [item.id, item.antigravity!])
+      )
+    )
+    setCopilotLogins(
+      Object.fromEntries(
+        entries.filter((item) => item.copilot).map((item) => [item.id, item.copilot!])
       )
     )
   }
@@ -328,6 +348,25 @@ export default function App() {
     await refresh()
   }
 
+  async function handleCopilotSubmit(input: { name: string; note?: string }): Promise<void> {
+    if (editingAccount) {
+      await window.api.updateAccount(editingAccount.id, {
+        name: input.name,
+        note: input.note
+      })
+    } else {
+      await window.api.addAccount({
+        name: input.name,
+        provider: 'github-copilot',
+        note: input.note
+      })
+    }
+
+    setDialogOpen(false)
+    setEditingAccount(null)
+    await refresh()
+  }
+
   function getLoginInfo(account: Account): {
     loggedIn: boolean
     email?: string
@@ -351,6 +390,16 @@ export default function App() {
       }
     }
 
+    if (account.provider === 'github-copilot') {
+      const login = copilotLogins[account.id]
+      const username = login?.username ?? account.copilotUsername
+      return {
+        loggedIn: Boolean(login?.loggedIn),
+        email: username ? `@${username}` : undefined,
+        label: login?.loggedIn ? 'Quản lý Copilot' : 'Import Copilot'
+      }
+    }
+
     const login = freeModelLogins[account.id]
     return {
       loggedIn: Boolean(login?.loggedIn),
@@ -370,6 +419,8 @@ export default function App() {
         loginPrompt={
           account.provider === 'antigravity'
             ? 'Đăng nhập Antigravity để xem quota'
+            : account.provider === 'github-copilot'
+              ? 'Import auth Copilot để xem quota'
             : account.provider === 'codex-chatgpt'
               ? 'Đăng nhập ChatGPT để xem quota'
               : 'Đăng nhập FreeModel để xem quota'
@@ -447,7 +498,8 @@ export default function App() {
             <strong>Development</strong>
             <span>
               Dữ liệu: {runtimeInfo.appDataDir} · Codex: {runtimeInfo.codexHome}
-              {!runtimeInfo.applyAntigravityIde ? ' · IDE sync: tắt' : ''}
+              {!runtimeInfo.applyAntigravityIde ? ' · Antigravity IDE sync: tắt' : ''}
+              {!runtimeInfo.applyCopilotIde ? ' · Copilot IDE sync: tắt' : ''}
             </span>
           </div>
         )}
@@ -479,6 +531,10 @@ export default function App() {
                       ? status?.authExists
                         ? 'accounts.json ✓'
                         : 'accounts.json ✗'
+                      : selectedProviderId === 'github-copilot'
+                        ? status?.authExists
+                          ? 'state.vscdb ✓'
+                          : 'state.vscdb ✗'
                       : `${status?.configExists ? 'config.toml ✓' : 'config.toml ✗'} · ${status?.authExists ? 'auth.json ✓' : 'auth.json ✗'}`}
                   </div>
                 ) : (
@@ -501,6 +557,10 @@ export default function App() {
                 {selectedProviderId === 'antigravity' ? (
                   <button className="btn btn-secondary" onClick={() => window.api.openAntigravityDir()}>
                     Mở config opencode
+                  </button>
+                ) : selectedProviderId === 'github-copilot' ? (
+                  <button className="btn btn-secondary" onClick={() => window.api.openCopilotDir()}>
+                    Mở globalStorage
                   </button>
                 ) : (
                   <button className="btn btn-secondary" onClick={() => window.api.openCodexDir()}>
@@ -561,6 +621,8 @@ export default function App() {
                       loginPrompt={
                         selectedProviderId === 'antigravity'
                           ? 'Đăng nhập Antigravity để xem quota'
+                          : selectedProviderId === 'github-copilot'
+                            ? 'Import auth Copilot để xem quota'
                           : selectedProviderId === 'codex-chatgpt'
                             ? 'Đăng nhập ChatGPT để xem quota'
                             : 'Đăng nhập FreeModel để xem quota'
@@ -612,7 +674,8 @@ export default function App() {
                                   {account.provider === 'codex-freemodel'
                                     ? `Key: ${maskKey(account.apiKey)}`
                                     : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
-                                  {account.provider !== 'antigravity' && (
+                                  {account.provider !== 'antigravity' &&
+                                    account.provider !== 'github-copilot' && (
                                     <> · {account.settings.model}</>
                                   )}
                                   {!isExpanded && <> · Chuyển: {account.switchCount} lần</>}
@@ -634,7 +697,8 @@ export default function App() {
                                   {account.provider === 'codex-freemodel'
                                     ? `Key: ${maskKey(account.apiKey)}`
                                     : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
-                                  {account.provider !== 'antigravity' && (
+                                  {account.provider !== 'antigravity' &&
+                                    account.provider !== 'github-copilot' && (
                                     <> · Model: {account.settings.model}</>
                                   )}{' '}
                                   · Chuyển: {account.switchCount} lần
@@ -747,6 +811,17 @@ export default function App() {
         />
       )}
 
+      {dialogOpen && selectedProviderId === 'github-copilot' && (
+        <CopilotAccountDialog
+          account={editingAccount?.provider === 'github-copilot' ? editingAccount : null}
+          onClose={() => {
+            setDialogOpen(false)
+            setEditingAccount(null)
+          }}
+          onSubmit={handleCopilotSubmit}
+        />
+      )}
+
       {loginAccount?.provider === 'codex-freemodel' && (
         <FreeModelLoginDialog
           account={loginAccount}
@@ -769,6 +844,16 @@ export default function App() {
 
       {loginAccount?.provider === 'antigravity' && (
         <AntigravityLoginDialog
+          account={loginAccount}
+          onClose={() => setLoginAccount(null)}
+          onSuccess={async () => {
+            await refresh()
+          }}
+        />
+      )}
+
+      {loginAccount?.provider === 'github-copilot' && (
+        <CopilotLoginDialog
           account={loginAccount}
           onClose={() => setLoginAccount(null)}
           onSuccess={async () => {

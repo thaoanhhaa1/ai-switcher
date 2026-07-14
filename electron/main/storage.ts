@@ -7,7 +7,8 @@ import { getAppDataDir, getAppDataPath } from './paths'
 export const EMPTY_ACTIVE_ACCOUNT_IDS: Record<ProviderId, string | null> = {
   'codex-freemodel': null,
   'codex-chatgpt': null,
-  antigravity: null
+  antigravity: null,
+  'github-copilot': null
 }
 
 /** Both Codex providers write to the same ~/.codex home. */

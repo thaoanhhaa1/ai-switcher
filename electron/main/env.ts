@@ -62,10 +62,20 @@ export function shouldApplyAntigravityIde(): boolean {
   return flag === '1' || flag === 'true' || flag === 'yes'
 }
 
+export function shouldApplyCopilotIde(): boolean {
+  if (isProd()) {
+    return true
+  }
+
+  const flag = process.env.AI_SWITCHER_APPLY_COPILOT_IDE?.trim().toLowerCase()
+  return flag === '1' || flag === 'true' || flag === 'yes'
+}
+
 export interface AppRuntimeInfo {
   env: AppEnv
   appDataDir: string
   codexHome: string
   opencodeConfigDir: string
   applyAntigravityIde: boolean
+  applyCopilotIde: boolean
 }

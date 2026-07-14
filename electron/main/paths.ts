@@ -54,3 +54,21 @@ export function getAntigravityAccountsPath(): string {
 export function getAntigravityConfigPath(): string {
   return join(getOpencodeConfigDir(), 'antigravity.json')
 }
+
+export function getCopilotConfigDir(): string {
+  if (process.env.COPILOT_CONFIG_DIR?.trim()) {
+    return process.env.COPILOT_CONFIG_DIR.trim()
+  }
+  if (isDev()) {
+    return join(getAppDataDir(), 'copilot')
+  }
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library/Application Support/Code/User/globalStorage')
+  }
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
+    return join(appData, 'Code', 'User', 'globalStorage')
+  }
+  const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
+  return join(xdgConfig, 'Code/User/globalStorage')
+}
