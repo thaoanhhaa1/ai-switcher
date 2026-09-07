@@ -1,4 +1,11 @@
-import type { AccountQuota, FreeModelLoginStatus, QuotaWindow } from '../types'
+import { useMemo, useState } from 'react'
+import type {
+  AccountQuota,
+  FreeModelLoginStatus,
+  ModelQuota,
+  ModelQuotaWindow,
+  QuotaWindow
+} from '../types'
 
 function formatUsd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
@@ -105,6 +112,155 @@ function QuotaWindowCard({ title, window, compact = false, displayMode = 'cents'
   )
 }
 
+function windowToQuotaWindow(w: ModelQuotaWindow): QuotaWindow {
+  return {
+    usedCents: w.usedPercent,
+    limitCents: 100,
+    remainingCents: w.remainingPercent,
+    usedPercent: w.usedPercent,
+    remainingPercent: w.remainingPercent,
+    resetsAt: w.resetsAt,
+    resetsInLabel: w.resetsInLabel,
+    windowLabel: w.windowLabel,
+    windowSeconds: w.windowSeconds,
+    resetAtLabel: w.resetAtLabel
+  }
+}
+
+interface ModelQuotaGridProps {
+  models: ModelQuota[]
+  compact?: boolean
+  displayMode: 'cents' | 'percent'
+}
+
+/**
+ * Lưới quota theo model. Khi có nhiều loại quota (5h / weekly / ...)
+ * hiển thị thêm tab để chuyển giữa từng loại; tab derive động từ dữ liệu.
+ */
+function ModelQuotaGrid({ models, compact = false, displayMode }: ModelQuotaGridProps) {
+  const [activeTab, setActiveTab] = useState('overview')
+
+  const windowTabs = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; order: number }>()
+    for (const model of models) {
+      for (const w of model.windows ?? []) {
+        if (!map.has(w.windowId)) {
+          map.set(w.windowId, {
+            id: w.windowId,
+            label: w.windowLabel,
+            order: w.windowSeconds ?? Number.MAX_SAFE_INTEGER
+          })
+        }
+      }
+    }
+    const tabs: Array<{ id: string; label: string; order: number }> = []
+    map.forEach((tab) => tabs.push(tab))
+    return tabs.sort((a, b) => a.order - b.order)
+  }, [models])
+
+  if (compact) {
+    return (
+      <>
+        <div className="quota-grid">
+          {models.slice(0, 3).map((model) => (
+            <QuotaWindowCard
+              key={model.modelId}
+              title={`Quota ${model.label}`}
+              window={model}
+              compact
+              displayMode={displayMode}
+            />
+          ))}
+        </div>
+        {models.length > 3 && (
+          <div className="quota-note">
+            +{models.length - 3} model khác (mở chi tiết để xem quota)
+          </div>
+        )}
+      </>
+    )
+  }
+
+  const hasTabs = windowTabs.length > 0
+  const currentTab = hasTabs && windowTabs.some((tab) => tab.id === activeTab) ? activeTab : 'overview'
+
+  const tabBar = hasTabs ? (
+    <div className="quota-tabs" role="tablist">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={currentTab === 'overview'}
+        className={`quota-tab ${currentTab === 'overview' ? 'active' : ''}`}
+        onClick={() => setActiveTab('overview')}
+      >
+        Tổng quan
+      </button>
+      {windowTabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          aria-selected={currentTab === tab.id}
+          className={`quota-tab ${currentTab === tab.id ? 'active' : ''}`}
+          onClick={() => setActiveTab(tab.id)}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  ) : null
+
+  if (currentTab === 'overview') {
+    return (
+      <>
+        {tabBar}
+        <div className="quota-grid">
+          {models.map((model) => (
+            <QuotaWindowCard
+              key={model.modelId}
+              title={`Quota ${model.label}`}
+              window={model}
+              displayMode={displayMode}
+            />
+          ))}
+        </div>
+      </>
+    )
+  }
+
+  const windowModels = models
+    .map((model) => ({ model, quotaWindow: model.windows?.find((w) => w.windowId === currentTab) }))
+    .filter((item): item is { model: ModelQuota; quotaWindow: ModelQuotaWindow } => !!item.quotaWindow)
+
+  return (
+    <>
+      {tabBar}
+      <div className="quota-grid">
+        {windowModels.map(({ model, quotaWindow }) =>
+          quotaWindow.disabled ? (
+            <div className="quota-card" key={model.modelId}>
+              <div className="quota-card-head">
+                <span>Quota {model.label}</span>
+                <span className="quota-muted">Không áp dụng</span>
+              </div>
+              {quotaWindow.resetAtLabel && (
+                <div className="quota-reset-at">Reset lúc: {quotaWindow.resetAtLabel}</div>
+              )}
+            </div>
+          ) : (
+            <QuotaWindowCard
+              key={model.modelId}
+              title={`Quota ${model.label}`}
+              window={windowToQuotaWindow(quotaWindow)}
+              displayMode={displayMode}
+            />
+          )
+        )}
+      </div>
+    </>
+  )
+}
+
 interface QuotaPanelProps {
   quota: AccountQuota | null
   loading?: boolean
@@ -201,30 +357,36 @@ export function QuotaPanel({
         </div>
       )}
 
-      <div className="quota-grid">
-        <QuotaWindowCard
-          title={getWindowTitle(quota.hourly, hourlyTitle)}
-          window={quota.hourly}
-          compact={compact}
-          displayMode={displayMode}
-        />
-        <QuotaWindowCard
-          title={getWindowTitle(quota.weekly, weeklyTitle)}
-          window={quota.weekly}
-          compact={compact}
-          displayMode={displayMode}
-        />
-      </div>
+      {quota.models && quota.models.length > 0 ? (
+        <ModelQuotaGrid models={quota.models} compact={compact} displayMode={displayMode} />
+      ) : (
+        <>
+          <div className="quota-grid">
+            <QuotaWindowCard
+              title={getWindowTitle(quota.hourly, hourlyTitle)}
+              window={quota.hourly}
+              compact={compact}
+              displayMode={displayMode}
+            />
+            <QuotaWindowCard
+              title={getWindowTitle(quota.weekly, weeklyTitle)}
+              window={quota.weekly}
+              compact={compact}
+              displayMode={displayMode}
+            />
+          </div>
 
-      {quota.codeReview && quota.codeReview.limitCents > 0 && (
-        <div className="quota-extra">
-          <QuotaWindowCard
-            title={getWindowTitle(quota.codeReview, codeReviewTitle)}
-            window={quota.codeReview}
-            compact={compact}
-            displayMode={displayMode}
-          />
-        </div>
+          {quota.codeReview && quota.codeReview.limitCents > 0 && (
+            <div className="quota-extra">
+              <QuotaWindowCard
+                title={getWindowTitle(quota.codeReview, codeReviewTitle)}
+                window={quota.codeReview}
+                compact={compact}
+                displayMode={displayMode}
+              />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

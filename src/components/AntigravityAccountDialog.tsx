@@ -120,7 +120,6 @@ export function AntigravityAccountDialog({ account, onClose, onSubmit }: Antigra
             loginStatus={loginStatus?.loggedIn ? { loggedIn: true, email: loginStatus.email } : loginStatus}
             loginPrompt="Đăng nhập Antigravity để xem quota"
             onLogin={account ? () => setLoginOpen(true) : undefined}
-            compact
           />
           {!account && (
             <div className="quota-note">Lưu tài khoản trước, sau đó đăng nhập Google OAuth để xem quota.</div>

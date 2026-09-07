@@ -124,6 +124,25 @@ export interface QuotaCredits {
   balance?: string
 }
 
+export interface ModelQuotaWindow {
+  windowId: string
+  windowLabel: string
+  windowSeconds?: number
+  usedPercent: number
+  remainingPercent: number
+  resetsAt: number | null
+  resetsInLabel: string
+  resetAtLabel: string
+  disabled?: boolean
+}
+
+export interface ModelQuota extends QuotaWindow {
+  modelId: string
+  label: string
+  /** Từng cửa sổ quota riêng của model (5h / weekly / ...) — hiển thị theo tab */
+  windows?: ModelQuotaWindow[]
+}
+
 export interface AccountQuota {
   available: boolean
   hasActiveLimits: boolean
@@ -143,6 +162,7 @@ export interface AccountQuota {
     weekly?: string
     codeReview?: string
   }
+  models?: ModelQuota[]
   codeReview?: QuotaWindow | null
   hourly: QuotaWindow
   weekly: QuotaWindow

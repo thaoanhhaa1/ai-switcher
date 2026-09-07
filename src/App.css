@@ -549,6 +549,8 @@
 
 .dialog {
   width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: #171a22;
@@ -732,6 +734,35 @@
 
 .quota-extra {
   margin-top: 10px;
+}
+
+.quota-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 10px;
+}
+
+.quota-tab {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: #9aa0a6;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.quota-tab:hover {
+  color: #e8eaed;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.quota-tab.active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 .dialog-desc {

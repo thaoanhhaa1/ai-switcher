@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises'
-import type { Account, AccountQuota, QuotaWindow } from '../../src/types'
+import type { Account, AccountQuota, QuotaWindow } from '../../../src/types'
 import {
   deleteStoredAntigravityAccount,
   findAccountIndexByEmail,
@@ -13,16 +13,26 @@ import {
   type AntigravityAccountEntry,
   type AntigravityAccountsFile
 } from '../antigravity-auth-storage'
+import {
+  parseAntigravityModelQuotas,
+  type AvailableModelsResponse,
+  type QuotaSummaryResponse
+} from '../antigravity-quota'
 import { applyAntigravityIdeAccount } from '../antigravity-ide'
 import { runAntigravityOAuthLogin } from '../antigravity-oauth'
 import { getAntigravityOAuthCredentials } from '../antigravity-oauth-config'
 import { getAntigravityAccountsPath, getOpencodeConfigDir } from '../paths'
-import { formatResetAt, formatResetLabelFromTimestamp } from '../quota-utils'
 import { loadAppData } from '../storage'
 
 export const ANTIGRAVITY_DOCS = 'https://github.com/NoeFabris/opencode-antigravity-auth'
 
 const CLOUD_CODE_BASE = 'https://cloudcode-pa.googleapis.com'
+// Antigravity IDE route qua host daily trước — model list + quota trên daily mới nhất
+// (vd gemini-3.8-flash-tiered chỉ xuất hiện trên daily). Prod là fallback.
+const CLOUD_CODE_BASES = [
+  'https://daily-cloudcode-pa.googleapis.com',
+  CLOUD_CODE_BASE
+] as const
 const USER_AGENT = 'antigravity/windows/amd64'
 const FALLBACK_PROJECT_ID = 'bamboo-precept-lgxtn'
 
@@ -36,12 +46,6 @@ export interface AntigravityLoginStatus {
   email?: string
   projectId?: string
   message?: string
-}
-
-interface QuotaGroup {
-  remaining?: number
-  resetTime?: string
-  count: number
 }
 
 function buildEmptyQuota(message?: string): AccountQuota {
@@ -63,29 +67,6 @@ function buildEmptyQuota(message?: string): AccountQuota {
     hourly: empty,
     weekly: empty,
     updatedAt: new Date().toISOString()
-  }
-}
-
-function mapQuotaGroup(group?: QuotaGroup, label?: string): QuotaWindow {
-  const remainingFraction = group?.remaining
-  const usedPercent =
-    typeof remainingFraction === 'number'
-      ? Math.min(100, Math.max(0, Math.round((1 - remainingFraction) * 100)))
-      : 0
-  const remainingPercent = Math.max(0, 100 - usedPercent)
-  const resetTimestamp = group?.resetTime ? Date.parse(group.resetTime) : NaN
-  const resetsAt = Number.isFinite(resetTimestamp) ? Math.floor(resetTimestamp / 1000) : null
-
-  return {
-    usedCents: usedPercent,
-    limitCents: group && group.count > 0 ? 100 : 0,
-    remainingCents: remainingPercent,
-    usedPercent,
-    remainingPercent,
-    resetsAt,
-    resetsInLabel: resetsAt ? formatResetLabelFromTimestamp(resetsAt) : '',
-    windowLabel: label,
-    resetAtLabel: resetsAt ? formatResetAt(resetsAt) : ''
   }
 }
 
@@ -158,40 +139,62 @@ async function loadProjectId(accessToken: string): Promise<string> {
   return ''
 }
 
-function classifyGroup(modelName: string): 'claude' | 'gemini-pro' | 'gemini-flash' | null {
-  const lower = modelName.toLowerCase()
-  if (lower.includes('claude')) return 'claude'
-  if (!lower.includes('gemini-3')) return null
-  if (lower.includes('flash')) return 'gemini-flash'
-  return 'gemini-pro'
-}
-
-function updateGroup(
-  groups: Record<string, QuotaGroup>,
-  group: string,
-  remainingFraction: number,
-  resetTime?: string
-) {
-  const entry = groups[group] ?? { count: 0 }
-  entry.count += 1
-  if (typeof remainingFraction === 'number') {
-    entry.remaining =
-      entry.remaining === undefined ? remainingFraction : Math.min(entry.remaining, remainingFraction)
-  }
-  if (resetTime) {
-    const timestamp = Date.parse(resetTime)
-    if (Number.isFinite(timestamp)) {
-      if (!entry.resetTime) {
-        entry.resetTime = resetTime
-      } else {
-        const existing = Date.parse(entry.resetTime)
-        if (!Number.isFinite(existing) || timestamp < existing) {
-          entry.resetTime = resetTime
-        }
-      }
+/**
+ * retrieveUserQuotaSummary — quota THẬT theo nhóm model (weekly/5h).
+ * fetchAvailableModels chỉ là placeholder (=1) với model còn hạn mức nhóm,
+ * nên phải gọi thêm endpoint này mới ra con số usage thật.
+ */
+async function loadQuotaSummary(
+  accessToken: string,
+  projectId: string
+): Promise<QuotaSummaryResponse | null> {
+  for (const base of CLOUD_CODE_BASES) {
+    try {
+      const response = await postJson(
+        `${base}/v1internal:retrieveUserQuotaSummary`,
+        accessToken,
+        projectId ? { project: projectId } : {}
+      )
+      if (response.status === 401) return null
+      if (!response.ok) continue
+      const payload = (await response.json()) as QuotaSummaryResponse
+      if (payload?.groups?.length) return payload
+    } catch {
+      // thử host kế tiếp
     }
   }
-  groups[group] = entry
+  return null
+}
+
+/**
+ * fetchAvailableModels — try daily first (model list mới nhất, match IDE), prod fallback.
+ */
+async function fetchAvailableModels(
+  accessToken: string,
+  projectId: string
+): Promise<{ data?: AvailableModelsResponse; status: number; text: string }> {
+  let lastStatus = 0
+  let lastText = ''
+  for (const base of CLOUD_CODE_BASES) {
+    try {
+      const response = await postJson(
+        `${base}/v1internal:fetchAvailableModels`,
+        accessToken,
+        projectId ? { project: projectId } : {}
+      )
+      lastStatus = response.status
+      if (response.ok) {
+        return { data: (await response.json()) as AvailableModelsResponse, status: response.status, text: '' }
+      }
+      lastText = await response.text().catch(() => '')
+      if (response.status === 401) {
+        return { status: response.status, text: lastText }
+      }
+    } catch {
+      // thử host kế tiếp
+    }
+  }
+  return { status: lastStatus, text: lastText }
 }
 
 function extractEntryFromPayload(payload: unknown): AntigravityAccountEntry {
@@ -346,48 +349,43 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       projectId = entry.managedProjectId ?? entry.projectId ?? FALLBACK_PROJECT_ID
     }
 
-    const response = await postJson(
-      `${CLOUD_CODE_BASE}/v1internal:fetchAvailableModels`,
-      accessToken,
-      projectId ? { project: projectId } : {}
-    )
+    const [modelsResult, summary] = await Promise.all([
+      fetchAvailableModels(accessToken, projectId),
+      loadQuotaSummary(accessToken, projectId)
+    ])
 
-    if (response.status === 401) {
+    if (modelsResult.status === 401) {
       return buildEmptyQuota('Phiên Google hết hạn. Hãy đăng nhập lại')
     }
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      return buildEmptyQuota(`Không thể lấy quota Antigravity (HTTP ${response.status}): ${text.slice(0, 120)}`)
-    }
-
-    const data = (await response.json()) as {
-      models?: Record<string, { quotaInfo?: { remainingFraction?: number; resetTime?: string } }>
-    }
-
-    const groups: Record<string, QuotaGroup> = {}
-    for (const [modelName, info] of Object.entries(data.models ?? {})) {
-      const group = classifyGroup(modelName)
-      if (!group || !info?.quotaInfo) continue
-      updateGroup(
-        groups,
-        group,
-        info.quotaInfo.remainingFraction ?? 0,
-        info.quotaInfo.resetTime
+    if (!modelsResult.data) {
+      return buildEmptyQuota(
+        `Không thể lấy quota Antigravity (HTTP ${modelsResult.status}): ${modelsResult.text.slice(0, 120)}`
       )
     }
 
-    const claude = mapQuotaGroup(groups.claude, 'Claude')
-    const geminiPro = mapQuotaGroup(groups['gemini-pro'], 'Gemini 3 Pro')
-    const geminiFlash = mapQuotaGroup(groups['gemini-flash'], 'Gemini 3 Flash')
-    const hasActiveLimits =
-      claude.limitCents > 0 || geminiPro.limitCents > 0 || geminiFlash.limitCents > 0
+    // Quota ĐỘNG theo model: danh sách model từ fetchAvailableModels
+    // (agentModelSorts/command/image/tiered) + usage THẬT từ retrieveUserQuotaSummary.
+    const models = parseAntigravityModelQuotas(modelsResult.data, summary)
 
-    const limitedGroups = [claude, geminiPro, geminiFlash].filter((item) => item.usedPercent >= 100)
+    const emptyWindow: QuotaWindow = {
+      usedCents: 0,
+      limitCents: 0,
+      remainingCents: 0,
+      usedPercent: 0,
+      remainingPercent: 0,
+      resetsAt: null,
+      resetsInLabel: ''
+    }
+
+    const hasActiveLimits = models.length > 0
+    const limitedModels = models.filter((model) => model.usedPercent >= 100)
     const messageParts = [
       entry.email ? `Google: ${entry.email}` : undefined,
       projectId ? `Project: ${projectId}` : undefined,
-      limitedGroups.length ? `${limitedGroups.length} nhóm đã chạm giới hạn` : undefined
+      limitedModels.length
+        ? `${limitedModels.length}/${models.length} model đã chạm giới hạn`
+        : undefined
     ].filter(Boolean)
 
     return {
@@ -396,15 +394,11 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       displayMode: 'percent',
       email: entry.email,
       message: messageParts.join(' · ') || undefined,
-      limitReached: limitedGroups.length > 0,
-      windowLabels: {
-        hourly: 'Claude',
-        weekly: 'Gemini 3 Pro',
-        codeReview: 'Gemini 3 Flash'
-      },
-      hourly: claude,
-      weekly: geminiPro,
-      codeReview: geminiFlash.limitCents > 0 ? geminiFlash : null,
+      limitReached: limitedModels.length > 0,
+      models,
+      hourly: models[0] ?? emptyWindow,
+      weekly: models[1] ?? emptyWindow,
+      codeReview: null,
       updatedAt: new Date().toISOString()
     }
   } catch (error) {
