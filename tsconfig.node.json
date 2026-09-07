@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "composite": true,
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
@@ -10,5 +11,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["electron.vite.config.ts", "electron/**/*"]
+  "include": ["electron.vite.config.ts", "electron/**/*", "src/types.ts"]
 }

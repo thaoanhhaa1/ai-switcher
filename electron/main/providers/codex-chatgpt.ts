@@ -4,7 +4,7 @@ import { mkdtemp } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import TOML from '@iarna/toml'
-import type { Account, AccountQuota, CodexFreeModelSettings } from '../../src/types'
+import type { Account, AccountQuota, CodexFreeModelSettings } from '../../../src/types'
 import { runCodexLogin } from '../codex-cli'
 import {
   deleteStoredAuth,
@@ -25,7 +25,7 @@ import {
   formatResetLabelFromTimestamp,
   inferWindowLabel
 } from '../quota-utils'
-import type { QuotaWindow } from '../../src/types'
+import type { QuotaWindow } from '../../../src/types'
 
 export const CODEX_CHATGPT_DOCS = 'https://developers.openai.com/codex/auth'
 

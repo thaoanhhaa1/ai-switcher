@@ -96,15 +96,18 @@ async function fetchProjectId(accessToken: string): Promise<string> {
         cloudaicompanionProject?: string | { id?: string }
       }
 
-      if (typeof data.cloudaicompanionProject === 'string' && data.cloudaicompanionProject) {
-        return data.cloudaicompanionProject
+      const project = data.cloudaicompanionProject
+
+      if (typeof project === 'string' && project) {
+        return project
       }
       if (
-        data.cloudaicompanionProject &&
-        typeof data.cloudaicompanionProject.id === 'string' &&
-        data.cloudaicompanionProject.id
+        typeof project === 'object' &&
+        project !== null &&
+        typeof project.id === 'string' &&
+        project.id
       ) {
-        return data.cloudaicompanionProject.id
+        return project.id
       }
     } catch {
       // try next endpoint
