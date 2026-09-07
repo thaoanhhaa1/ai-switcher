@@ -14,6 +14,7 @@ import type {
     ProviderId,
     ProviderInfo,
     ProviderOptions,
+    QuotaWindow,
 } from '../../src/types';
 import { hashApiKey } from './crypto';
 import {
@@ -121,6 +122,27 @@ function defaultSettings(provider: ProviderId): CodexSettings {
     if (provider === 'codex-chatgpt') return { ...DEFAULT_CHATGPT_SETTINGS };
     if (provider === 'antigravity') return { ...DEFAULT_ANTIGRAVITY_SETTINGS };
     return { ...DEFAULT_CODEX_SETTINGS };
+}
+
+/** Fallback khi provider chưa hỗ trợ / lỗi bất ngờ — 1 tài khoản hỏng không kéo cả danh sách. */
+function buildUnavailableQuota(message: string): AccountQuota {
+    const emptyWindow: QuotaWindow = {
+        usedCents: 0,
+        limitCents: 0,
+        remainingCents: 0,
+        usedPercent: 0,
+        remainingPercent: 0,
+        resetsAt: null,
+        resetsInLabel: '',
+    };
+    return {
+        available: false,
+        hasActiveLimits: false,
+        message,
+        hourly: emptyWindow,
+        weekly: emptyWindow,
+        updatedAt: new Date().toISOString(),
+    };
 }
 
 async function persistAntigravityIdentity(
@@ -659,7 +681,11 @@ export async function getAccountsQuota(
 
     const entries = await Promise.all(
         targets.map(async (account) => {
-            const quota = await getAccountQuota(account.provider, account.id);
+            const quota = await getAccountQuota(account.provider, account.id).catch(
+                (error: unknown) => buildUnavailableQuota(
+                    error instanceof Error ? error.message : 'Không thể lấy quota',
+                ),
+            );
             return [account.id, quota] as const;
         }),
     );
