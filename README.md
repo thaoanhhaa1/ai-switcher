@@ -9,12 +9,13 @@ Hiện hỗ trợ:
 | [FreeModel](https://freemodel.dev/dashboard/docs#codex) | Codex CLI | API key | Dashboard OTP login |
 | [ChatGPT](https://developers.openai.com/codex/auth) | Codex CLI | OAuth subscription | ChatGPT `wham/usage` API |
 | [Antigravity](https://github.com/NoeFabris/opencode-antigravity-auth) | OpenCode | Google OAuth | Claude / Gemini 3 Pro / Flash |
+| [GitHub Copilot](https://github.com/features/copilot) | VS Code | GitHub OAuth (import từ VS Code) | GitHub Copilot usage API |
 
 ## Tính năng
 
-- Thêm / sửa / xóa nhiều tài khoản (Codex FreeModel, Codex ChatGPT, Antigravity)
+- Thêm / sửa / xóa nhiều tài khoản (Codex FreeModel, Codex ChatGPT, Antigravity, GitHub Copilot)
 - Chuyển tài khoản active chỉ với một click
-- Tự động ghi `~/.codex/`, `~/.config/opencode/antigravity-accounts.json`, và Antigravity IDE `state.vscdb`
+- Tự động ghi `~/.codex/`, `~/.config/opencode/antigravity-accounts.json`, Antigravity IDE `state.vscdb`, và VS Code `state.vscdb` (Copilot)
 - Theo dõi quota theo từng tài khoản
 - Đăng nhập FreeModel qua OTP, ChatGPT qua `codex login`, Antigravity qua `opencode auth login`
 - Import auth từ file hoặc config live
@@ -109,6 +110,7 @@ Tham khảo: [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-a
 - npm
 - **Codex CLI** — `npm install -g @openai/codex` (login ChatGPT)
 - **OpenCode CLI** — `npm install -g opencode` (login Antigravity)
+- **VS Code + GitHub Copilot** — đăng nhập sẵn trong VS Code (import auth Copilot)
 
 Cài Codex CLI:
 
@@ -141,6 +143,7 @@ npm run dev
 | Codex live | `~/.ai-switcher-dev/.codex/` | `~/.codex/` |
 | OpenCode | `~/.ai-switcher-dev/opencode/` | `~/.config/opencode/` |
 | Antigravity IDE | Bỏ qua (trừ khi bật flag) | Đồng bộ `state.vscdb` |
+| VS Code (Copilot) | Bỏ qua (trừ khi bật flag) | Đồng bộ `state.vscdb` |
 
 Override bằng biến môi trường trong `.env.development` / `.env.production` (xem `.env.example`).
 
@@ -166,6 +169,7 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 | `~/.ai-switcher/freemodel-sessions/{id}.json` | Session cookie FreeModel (đọc quota) |
 | `~/.ai-switcher/codex-auth/{id}.json` | Snapshot auth ChatGPT OAuth |
 | `~/.ai-switcher/antigravity-auth/{id}.json` | Snapshot Google OAuth Antigravity |
+| `~/.ai-switcher/copilot-auth/{id}.json` | Snapshot GitHub Copilot auth (VS Code) |
 | `~/.config/opencode/antigravity-accounts.json` | Config live Antigravity (OpenCode) |
 
 **Development** (`npm run dev`): cùng cấu trúc nhưng nằm dưới `~/.ai-switcher-dev/` (Codex/OpenCode sandbox trong thư mục đó).
@@ -199,11 +203,21 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 3. Liên kết auth: `opencode auth login`, import live, hoặc chọn file JSON
 4. **Chuyển sang** để ghi `antigravity-accounts.json` với account active
 
+### Thêm tài khoản GitHub Copilot
+
+1. Đăng nhập GitHub Copilot trong VS Code (`GitHub: Sign in`)
+2. Trong AI Switcher: **+ Thêm tài khoản** → **GitHub Copilot**, đặt tên tài khoản
+3. Liên kết auth bằng một trong các cách:
+   - **Import từ VS Code** — chụp snapshot `github.auth` trong `state.vscdb` hiện tại
+   - **Chọn file snapshot** — import snapshot JSON đã lưu
+4. **Chuyển sang** để inject token vào `state.vscdb` của VS Code (prod; dev cần flag `AI_SWITCHER_APPLY_COPILOT_IDE=1`)
+
 ### Xem quota
 
 - **FreeModel**: cần đăng nhập dashboard (OTP). API key alone không đủ quyền đọc quota.
 - **ChatGPT**: auth OAuth hợp lệ, quota theo %
-- **Antigravity**: Claude, Gemini 3 Pro, Gemini 3 Flash (% còn lại + thời gian reset)
+- **Antigravity**: theo từng model (Claude, Gemini...) với cửa sổ 5h / 7 ngày, % đã dùng + thời gian reset
+- **GitHub Copilot**: premium requests theo % (GitHub Copilot usage API)
 
 ## Roadmap
 
