@@ -221,6 +221,19 @@ export default function App() {
   }
 
   async function handleSwitch(account: Account): Promise<void> {
+    // Apply Copilot đóng VS Code để ghi state.vscdb — hành động destructive,
+    // phải confirm trước (CODE_REVIEW H3).
+    if (
+      account.provider === 'github-copilot' &&
+      runtimeInfo?.applyCopilotIde &&
+      !window.confirm(
+        `Chuyển sang "${account.name}" sẽ ĐÓNG VS Code để ghi auth Copilot vào state.vscdb.\n\n` +
+          'Lưu công việc đang làm trong VS Code trước khi tiếp tục.\n\nTiếp tục?'
+      )
+    ) {
+      return
+    }
+
     setBusyId(account.id)
     setError(null)
     try {

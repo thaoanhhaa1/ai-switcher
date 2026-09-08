@@ -73,7 +73,6 @@ import {
     clearCopilotAuth,
     DEFAULT_COPILOT_SETTINGS,
     fetchCopilotQuota,
-    getCopilotConfigDirPath,
     getCopilotLoginStatus,
     importCopilotFromFile,
     importCopilotFromLive,
@@ -305,8 +304,8 @@ async function buildActiveStatusFromAccount(
             provider: 'github-copilot',
             accountId: active.id,
             accountName: active.name,
-            codexHome: getCopilotConfigDirPath(),
-            configExists: await fileExists(getCopilotConfigDirPath()),
+            codexHome: getCopilotConfigDir(),
+            configExists: await fileExists(getCopilotConfigDir()),
             authExists: isValidCopilotEntry(stored),
             authMode: 'github-oauth',
         };
@@ -358,8 +357,8 @@ async function getInactiveStatus(
             provider: 'github-copilot',
             accountId: null,
             accountName: null,
-            codexHome: getCopilotConfigDirPath(),
-            configExists: await fileExists(getCopilotConfigDirPath()),
+            codexHome: getCopilotConfigDir(),
+            configExists: await fileExists(getCopilotConfigDir()),
             authExists: await hasLiveCopilotAuth(),
             authMode: 'github-oauth',
         };
@@ -579,7 +578,14 @@ export async function updateAccount(
 
     await saveAppData(next);
 
-    if (getActiveAccountIdForProvider(data, updated.provider) === id) {
+    // Chỉ re-apply khi phần config/auth thực sự đổi. Sửa name/note thuần metadata
+    // không được phép kick lại IDE (Copilot apply là destructive — CODE_REVIEW H3).
+    const configChanged =
+        updated.apiKey !== existing.apiKey ||
+        updated.settings.model !== existing.settings.model ||
+        updated.settings.modelReasoningEffort !== existing.settings.modelReasoningEffort;
+
+    if (configChanged && getActiveAccountIdForProvider(data, updated.provider) === id) {
         if (updated.provider === 'codex-freemodel') {
             await applyCodexFreeModelAccount(updated);
         } else if (updated.provider === 'codex-chatgpt') {
@@ -755,17 +761,11 @@ export async function getProviderOptions(
     }
 
     if (provider === 'github-copilot') {
+        // Copilot không chọn model qua app (do VS Code quản lý) — dialog Copilot
+        // cũng không gọi endpoint này. Trả rỗng thay vì hardcode model lỗi thời (CODE_REVIEW L3).
         return {
-            models: [
-                { id: 'default', ownedBy: 'github' },
-                { id: 'gpt-4o', ownedBy: 'openai' },
-                { id: 'claude-sonnet-4', ownedBy: 'anthropic' },
-            ],
-            reasoningEfforts: [
-                { value: 'low', label: 'low' },
-                { value: 'medium', label: 'medium' },
-                { value: 'high', label: 'high' },
-            ],
+            models: [],
+            reasoningEfforts: [],
         };
     }
 
