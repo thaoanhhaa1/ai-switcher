@@ -7,6 +7,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "rebuild:native": "electron-builder install-app-deps",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
     "package:mac": "electron-vite build && electron-builder --mac",
@@ -15,9 +16,12 @@
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
+    "better-sqlite3": "^11.10.0",
+    "jsonc-parser": "^3.3.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.13.10",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -37,15 +41,27 @@
     "directories": {
       "output": "release"
     },
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "linux": {
-      "target": ["AppImage", "deb"]
+      "target": [
+        "AppImage",
+        "deb"
+      ]
     }
   }
 }
