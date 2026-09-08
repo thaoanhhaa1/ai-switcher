@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
-import type { Account, AccountQuota, QuotaWindow } from '../../../src/types'
+import type { Account, AccountQuota, CopilotLoginStatus, QuotaWindow } from '../../../src/types'
 import {
   deleteStoredCopilotAccount,
   isValidCopilotEntry,
@@ -95,13 +95,6 @@ export const DEFAULT_COPILOT_SETTINGS = {
   modelReasoningEffort: 'medium' as const
 }
 
-export interface CopilotLoginStatus {
-  loggedIn: boolean
-  username?: string
-  targets?: CopilotIdeTarget[]
-  message?: string
-}
-
 interface CopilotQuotaCategory {
   percent_remaining?: number
   remaining?: number
@@ -149,12 +142,36 @@ function mapPercentCategory(
 ): QuotaWindow | null {
   if (!category) return null
 
-  const remainingPercent =
-    typeof category.percent_remaining === 'number'
-      ? Math.min(100, Math.max(0, Math.round(category.percent_remaining)))
-      : category.remaining && category.entitlement
-        ? Math.min(100, Math.max(0, Math.round((category.remaining / category.entitlement) * 100)))
-        : 0
+  const windowLabel = label ? `${label} · Unlimited` : 'Unlimited'
+  if (category.unlimited) {
+    return {
+      usedCents: 0,
+      limitCents: 100,
+      remainingCents: 100,
+      usedPercent: 0,
+      remainingPercent: 100,
+      resetsAt: null,
+      resetsInLabel: '',
+      windowLabel
+    }
+  }
+
+  const hasPercent =
+    typeof category.percent_remaining === 'number' &&
+    Number.isFinite(category.percent_remaining)
+  const hasCounts =
+    typeof category.remaining === 'number' &&
+    Number.isFinite(category.remaining) &&
+    typeof category.entitlement === 'number' &&
+    category.entitlement > 0
+
+  // Không có bất kỳ số liệu nào → coi như chưa có data (ẩn card),
+  // KHÔNG suy ra "100% đã dùng" (xem CODE_REVIEW M4).
+  if (!hasPercent && !hasCounts) return null
+
+  const remainingPercent = hasPercent
+    ? Math.min(100, Math.max(0, Math.round(category.percent_remaining!)))
+    : Math.min(100, Math.max(0, Math.round((category.remaining! / category.entitlement!) * 100)))
   const usedPercent = Math.max(0, 100 - remainingPercent)
 
   return {
@@ -466,6 +483,13 @@ export async function importCopilotFromFile(
 ): Promise<CopilotLoginStatus> {
   const raw = await readFile(filePath, 'utf-8')
   const entry = extractEntryFromPayload(JSON.parse(raw) as unknown)
+
+  // Live import đã check trùng auth; file import cũng phải check (CODE_REVIEW M3)
+  const authValue = entry.snapshots?.vscode?.entries?.[GITHUB_AUTH_SECRET_KEY]
+  if (authValue) {
+    await assertAuthUniqueForAccount(accountId, authValue)
+  }
+
   await saveStoredCopilotAccount(accountId, entry)
   return getCopilotLoginStatus(accountId)
 }
@@ -549,15 +573,29 @@ export async function fetchCopilotQuota(accountId: string): Promise<AccountQuota
     const hasActiveLimits = hourly.limitCents > 0 || weekly.limitCents > 0
     const plan = data.copilot_plan ?? data.access_type_sku
 
+    // Token dùng để đọc quota là token MACHINE-LEVEL (gh CLI / apps.json),
+    // không phải token của slot → phải cảnh báo khi login của token ≠ username slot
+    // (xem CODE_REVIEW H1 — tránh hiển thị quota của account khác như của slot này).
+    const slotUsername = stored.username?.trim()
+    const loginMismatch = Boolean(
+      data.login && slotUsername && data.login.toLowerCase() !== slotUsername.toLowerCase()
+    )
+
+    const messageParts = [
+      loginMismatch
+        ? `⚠ Quota của @${data.login} (token máy), không phải @${slotUsername} của slot này`
+        : undefined,
+      plan ? `Plan: ${plan}` : undefined,
+      slotUsername ? `GitHub: @${slotUsername}` : undefined
+    ].filter(Boolean)
+
     return {
       available: true,
       hasActiveLimits,
       displayMode: 'percent',
       planType: plan,
       email: data.login ?? stored.username,
-      message: [plan ? `Plan: ${plan}` : undefined, stored.username ? `GitHub: @${stored.username}` : undefined]
-        .filter(Boolean)
-        .join(' · ') || undefined,
+      message: messageParts.join(' · ') || undefined,
       windowLabels: {
         hourly: hourly.windowLabel,
         weekly: weekly.windowLabel
@@ -570,16 +608,4 @@ export async function fetchCopilotQuota(accountId: string): Promise<AccountQuota
     const message = error instanceof Error ? error.message : 'Lỗi mạng'
     return buildEmptyQuota(`Không thể lấy quota Copilot: ${message}`)
   }
-}
-
-export function getCopilotConfigDirPath(): string {
-  const home = homedir()
-  if (process.platform === 'darwin') {
-    return join(home, 'Library/Application Support/Code/User/globalStorage')
-  }
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming')
-    return join(appData, 'Code', 'User', 'globalStorage')
-  }
-  return join(home, '.config/Code/User/globalStorage')
 }
