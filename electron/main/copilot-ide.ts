@@ -1,11 +1,10 @@
 import { execFile } from 'child_process'
-import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'fs/promises'
-import { tmpdir } from 'os'
+import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
-import { dirname, join } from 'path'
+import { join } from 'path'
 import { promisify } from 'util'
 import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser'
-import type DatabaseType from 'better-sqlite3'
+import { backupDatabase, fileExists, getSqliteDriver, getSqliteDriverName, withDbLock } from './sqlite-db'
 import { shouldApplyCopilotIde } from './env'
 
 const execFileAsync = promisify(execFile)
@@ -43,23 +42,6 @@ const STATIC_KEYS = [
 const STATIC_PREFIXES = ['extensionsAssignmentFilterProvider.copilot']
 
 const USERNAME_KEYS = ['github.copilot-github', 'vscode.github-github']
-
-const BACKUP_PREFIX = 'state.vscdb.ai-switcher-'
-const BACKUP_SUFFIX = '.bak'
-const BACKUP_KEEP = 5
-
-function escapeSqlString(value: string): string {
-  return value.replace(/'/g, "''")
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
-}
 
 /**
  * Cho phép trỏ DB của target 'vscode' vào file khác (test/dev sandbox):
@@ -150,312 +132,31 @@ export function getCopilotIdeCandidates(): CopilotIdeInfo[] {
 }
 
 // ---------------------------------------------------------------------------
-// SQLite drivers
-//
-// Primary: better-sqlite3 (native, cross-platform, parameterized — không cần
-// sqlite3 CLI / python3 / lsof). Loaded lazily; nếu ABI chưa rebuild cho
-// Electron thì fallback sang sqlite3 CLI.
-// ---------------------------------------------------------------------------
-
-interface SqliteDriver {
-  readonly name: 'better-sqlite3' | 'sqlite3-cli'
-  ensureSchema(dbPath: string): Promise<void>
-  readValue(dbPath: string, key: string): Promise<string | null>
-  writeValue(dbPath: string, key: string, value: string): Promise<void>
-  deleteValue(dbPath: string, key: string): Promise<void>
-  listKeys(dbPath: string, likePattern: string): Promise<string[]>
-  finalize(dbPath: string): Promise<void>
-}
-
-type DatabaseCtor = typeof DatabaseType
-type DatabaseInstance = InstanceType<DatabaseCtor>
-
-let cachedDatabase: DatabaseCtor | null | undefined
-
-function loadNativeSqlite(): DatabaseCtor | null {
-  if (cachedDatabase === undefined) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require('better-sqlite3') as DatabaseCtor | { default: DatabaseCtor }
-      cachedDatabase = 'default' in mod ? mod.default : mod
-    } catch {
-      // ABI mismatch (chưa chạy `npm run rebuild:native`) hoặc thiếu binary
-      cachedDatabase = null
-    }
-  }
-  return cachedDatabase
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Buffer.isBuffer(value)) return value.toString('utf8')
-  return String(value)
-}
-
-function translateBusyError(error: unknown): never {
-  const message = error instanceof Error ? error.message : String(error)
-  if (/locked|busy/i.test(message)) {
-    throw new Error(
-      'state.vscdb đang bị khóa (VS Code chưa đóng hẳn). Hãy đóng VS Code rồi thử lại.'
-    )
-  }
-  throw error instanceof Error ? error : new Error(message)
-}
-
-function createNativeDriver(Database: DatabaseCtor): SqliteDriver {
-  function open(dbPath: string, readonly: boolean): DatabaseInstance {
-    const db = Database(dbPath, { readonly })
-    db.pragma('busy_timeout = 10000')
-    return db
-  }
-
-  return {
-    name: 'better-sqlite3',
-    async ensureSchema(dbPath) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, false)
-        db.exec(
-          'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY ON CONFLICT REPLACE, value BLOB)'
-        )
-      } catch (error) {
-        translateBusyError(error)
-      } finally {
-        db?.close()
-      }
-    },
-    async readValue(dbPath, key) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, true)
-        const row = db
-          .prepare('SELECT value FROM ItemTable WHERE key = ? LIMIT 1')
-          .get(key) as { value: unknown } | undefined
-        return row === undefined ? null : toText(row.value)
-      } catch (error) {
-        translateBusyError(error)
-      } finally {
-        db?.close()
-      }
-    },
-    async writeValue(dbPath, key, value) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, false)
-        db.prepare(
-          'INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)'
-        ).run(key, value)
-      } catch (error) {
-        translateBusyError(error)
-      } finally {
-        db?.close()
-      }
-    },
-    async deleteValue(dbPath, key) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, false)
-        db.prepare('DELETE FROM ItemTable WHERE key = ?').run(key)
-      } catch (error) {
-        translateBusyError(error)
-      } finally {
-        db?.close()
-      }
-    },
-    async listKeys(dbPath, likePattern) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, true)
-        const rows = db
-          .prepare("SELECT key FROM ItemTable WHERE key LIKE ? ESCAPE '\\'")
-          .all(likePattern) as Array<{ key: string }>
-        return rows.map((row) => row.key)
-      } catch (error) {
-        translateBusyError(error)
-      } finally {
-        db?.close()
-      }
-    },
-    async finalize(dbPath) {
-      let db: DatabaseInstance | undefined
-      try {
-        db = open(dbPath, false)
-        db.pragma('wal_checkpoint(TRUNCATE)')
-      } catch {
-        // DB có thể không ở WAL mode — bỏ qua
-      } finally {
-        db?.close()
-      }
-      await removeWalSidecars(dbPath)
-    }
-  }
-}
-
-async function sqliteCliQuery(dbPath: string, sql: string): Promise<string> {
-  const { stdout } = await execFileAsync('sqlite3', [dbPath, sql], {
-    encoding: 'utf8',
-    maxBuffer: 20 * 1024 * 1024
-  })
-  return stdout
-}
-
-async function withTempFile<T>(
-  suffix: string,
-  fn: (path: string) => Promise<T>
-): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'ai-switcher-copilot-'))
-  const path = join(dir, `value${suffix}`)
-  try {
-    return await fn(path)
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined)
-  }
-}
-
-function createCliDriver(): SqliteDriver {
-  return {
-    name: 'sqlite3-cli',
-    async ensureSchema(dbPath) {
-      await sqliteCliQuery(
-        dbPath,
-        'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY ON CONFLICT REPLACE, value BLOB);'
-      )
-    },
-    async readValue(dbPath, key) {
-      // writefile() giữ nguyên byte — tránh hỏng value có newline (stdout trim chỉ an toàn với JSON 1 dòng)
-      return withTempFile('.out', async (outPath) => {
-        await sqliteCliQuery(
-          dbPath,
-          `SELECT writefile('${escapeSqlString(outPath)}', value) FROM ItemTable WHERE key = '${escapeSqlString(key)}' LIMIT 1;`
-        )
-        if (!(await fileExists(outPath))) return null
-        return readFile(outPath, 'utf8')
-      })
-    },
-    async writeValue(dbPath, key, value) {
-      await withTempFile('.txt', async (valuePath) => {
-        await writeFile(valuePath, value, 'utf8')
-        await sqliteCliQuery(
-          dbPath,
-          `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${escapeSqlString(
-            key
-          )}', CAST(readfile('${escapeSqlString(valuePath)}') AS TEXT));`
-        )
-      })
-    },
-    async deleteValue(dbPath, key) {
-      await sqliteCliQuery(
-        dbPath,
-        `DELETE FROM ItemTable WHERE key = '${escapeSqlString(key)}';`
-      )
-    },
-    async listKeys(dbPath, likePattern) {
-      const output = await sqliteCliQuery(
-        dbPath,
-        `SELECT key FROM ItemTable WHERE key LIKE '${escapeSqlString(likePattern)}' ESCAPE '\\';`
-      )
-      return output.split('\n').filter(Boolean)
-    },
-    async finalize(dbPath) {
-      try {
-        await sqliteCliQuery(dbPath, 'PRAGMA wal_checkpoint(TRUNCATE);')
-      } catch {
-        // ignore
-      }
-      await removeWalSidecars(dbPath)
-    }
-  }
-}
-
-let cachedDriver: SqliteDriver | null = null
-let sqliteCliChecked = false
-
-async function getDriver(): Promise<SqliteDriver> {
-  if (cachedDriver) return cachedDriver
-
-  const Database = loadNativeSqlite()
-  if (Database) {
-    cachedDriver = createNativeDriver(Database)
-    return cachedDriver
-  }
-
-  if (!sqliteCliChecked) {
-    sqliteCliChecked = true
-    try {
-      await execFileAsync('sqlite3', ['--version'], { encoding: 'utf8' })
-    } catch {
-      throw new Error(
-        'Cần better-sqlite3 (chạy `npm run rebuild:native`) hoặc cài sqlite3 CLI để đồng bộ GitHub Copilot'
-      )
-    }
-  }
-
-  cachedDriver = createCliDriver()
-  return cachedDriver
-}
-
-async function removeWalSidecars(dbPath: string): Promise<void> {
-  for (const suffix of ['-wal', '-shm']) {
-    const sidecar = `${dbPath}${suffix}`
-    if (await fileExists(sidecar)) {
-      await unlink(sidecar).catch(() => undefined)
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Per-DB mutex — serialize mọi thao tác apply trên cùng một state.vscdb
-// ---------------------------------------------------------------------------
-
-const dbLocks = new Map<string, Promise<unknown>>()
-
-function withDbLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
-  const previous = dbLocks.get(dbPath) ?? Promise.resolve()
-  const run = previous.then(fn, fn)
-  const tail = run.then(
-    () => {
-      if (dbLocks.get(dbPath) === tail) dbLocks.delete(dbPath)
-    },
-    () => {
-      if (dbLocks.get(dbPath) === tail) dbLocks.delete(dbPath)
-    }
-  )
-  dbLocks.set(dbPath, tail)
-  return run
-}
-
-// ---------------------------------------------------------------------------
 // High-level helpers (driver-based)
 // ---------------------------------------------------------------------------
 
 /** Tên driver SQLite đang dùng — cho test + log debug ('better-sqlite3' | 'sqlite3-cli'). */
 export async function getActiveDriverName(): Promise<string> {
-  const driver = await getDriver()
-  return driver.name
+  return getSqliteDriverName()
 }
 
 async function readDbValue(dbPath: string, key: string): Promise<string | null> {
-  const driver = await getDriver()
+  const driver = await getSqliteDriver()
   return driver.readValue(dbPath, key)
 }
 
-async function writeDbValue(dbPath: string, key: string, value: string): Promise<void> {
-  const driver = await getDriver()
-  await driver.writeValue(dbPath, key, value)
-}
-
 async function deleteDbValue(dbPath: string, key: string): Promise<void> {
-  const driver = await getDriver()
-  await driver.deleteValue(dbPath, key)
+  const driver = await getSqliteDriver()
+  await driver.deleteValues(dbPath, [key])
 }
 
 async function listMatchingKeys(dbPath: string, likePattern: string): Promise<string[]> {
-  const driver = await getDriver()
+  const driver = await getSqliteDriver()
   return driver.listKeys(dbPath, likePattern)
 }
 
 async function finalizeDbWrite(dbPath: string): Promise<void> {
-  const driver = await getDriver()
+  const driver = await getSqliteDriver()
   await driver.finalize(dbPath)
 }
 
@@ -664,11 +365,12 @@ export async function applyCopilotEntries(
   await clearCopilotEntries(dbPath, username)
   await deleteDbValue(dbPath, COPILOT_CHAT_KEY)
 
-  for (const [key, value] of Object.entries(entries)) {
-    if (key === COPILOT_CHAT_KEY) {
-      continue
-    }
-    await writeDbValue(dbPath, key, value)
+  const toApply = Object.fromEntries(
+    Object.entries(entries).filter(([key]) => key !== COPILOT_CHAT_KEY)
+  )
+  if (Object.keys(toApply).length) {
+    const driver = await getSqliteDriver()
+    await driver.writeValues(dbPath, toApply)
   }
 }
 
@@ -708,7 +410,8 @@ async function syncWorkspaceCopilotUsername(
       if (current === null || current === username) {
         continue
       }
-      await writeDbValue(dbPath, WORKSPACE_USERNAME_KEY, username)
+      const driver = await getSqliteDriver()
+      await driver.writeValue(dbPath, WORKSPACE_USERNAME_KEY, username)
       await finalizeDbWrite(dbPath)
       updated += 1
     } catch {
@@ -857,28 +560,6 @@ async function quitIde(appName: string): Promise<void> {
   }
 }
 
-/** Backup timestamped + giữ tối đa BACKUP_KEEP bản gần nhất. */
-async function backupDatabase(dbPath: string): Promise<string> {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const backupPath = join(dirname(dbPath), `${BACKUP_PREFIX}${stamp}${BACKUP_SUFFIX}`)
-  await copyFile(dbPath, backupPath)
-
-  try {
-    const siblings = await readdir(dirname(dbPath))
-    const backups = siblings
-      .filter((name) => name.startsWith(BACKUP_PREFIX) && name.endsWith(BACKUP_SUFFIX))
-      .sort()
-      .reverse()
-    for (const stale of backups.slice(BACKUP_KEEP)) {
-      await rm(join(dirname(dbPath), stale), { force: true }).catch(() => undefined)
-    }
-  } catch {
-    // prune thất bại không chặn switch
-  }
-
-  return backupPath
-}
-
 async function applyToIde(
   ide: CopilotIdeInfo,
   entries: Record<string, string>,
@@ -892,7 +573,7 @@ async function applyToIde(
     if (await fileExists(ide.dbPath)) {
       await backupDatabase(ide.dbPath)
     } else {
-      const driver = await getDriver()
+      const driver = await getSqliteDriver()
       await driver.ensureSchema(ide.dbPath)
     }
 
@@ -927,9 +608,9 @@ export async function applyCopilotIdeSnapshots(
     }
   }
 
-  let driver: SqliteDriver
+  let driverName: string
   try {
-    driver = await getDriver()
+    driverName = await getSqliteDriverName()
   } catch (error) {
     return {
       applied: false,
@@ -959,7 +640,7 @@ export async function applyCopilotIdeSnapshots(
   }
 
   const label = appliedTargets.join(', ')
-  const driverNote = driver.name === 'sqlite3-cli' ? ' (sqlite3 CLI fallback)' : ''
+  const driverNote = driverName === 'sqlite3-cli' ? ' (sqlite3 CLI fallback)' : ''
   const message = `Đã chuyển Copilot sang @${snapshots[appliedTargets[0]!]?.username ?? 'target'} trong ${label}${driverNote}. Mở VS Code và chạy "Developer: Reload Window".`
 
   return {

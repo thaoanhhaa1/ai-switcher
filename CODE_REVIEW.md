@@ -218,9 +218,11 @@ Mỗi lần switch đè backup trước đó; nếu user switch 2 lần rồi ph
 | — | ✅ Bổ sung khi fix | `asarUnpack` cho better-sqlite3 trong electron-builder config; `getActiveDriverName()` export cho test/debug; fix M2 side-effect (override DB → không quit IDE thật). |
 
 **Hạng mục còn lại (Phase 1):**
-- Token riêng per-slot cho Copilot quota (long-term H1)
-- Migration `antigravity-ide.ts` sang cùng dual-driver pattern (hiện vẫn CLI)
-- Unit tests cho `copilot-ide`/`github-copilot` chính thức vào repo (hiện test ở `/tmp`)
+- ~~Token riêng per-slot cho Copilot quota (long-term H1)~~ → ✅ ĐÃ FIX: GitHub device flow login per-slot (`copilot-device-flow.ts`, client_id Copilot plugin public, scope `read:user`), token lưu trong `copilot-auth/{id}.json`, `fetchCopilotQuota` ưu tiên token slot → fallback token máy + cảnh báo; UI device flow trong `CopilotLoginDialog`
+- ~~Migration `antigravity-ide.ts` sang cùng dual-driver pattern (hiện vẫn CLI)~~ → ✅ ĐÃ FIX: tách shared module `electron/main/sqlite-db.ts` (dual-driver + mutex + backup), copilot-ide và antigravity-ide cùng dùng; antigravity cũng bỏ `pkill -f antigravity` → `pkill -x`
+- ~~Unit tests cho `copilot-ide`/`github-copilot` chính thức vào repo~~ → ✅ ĐÃ FIX: vitest (`npm test`, 30 tests: antigravity-quota parsing, copilot quota mapping M4, filterEntriesForApply, storage migration) + driver e2e trong repo (`npm run test:driver`, 12+12 assertions chạy trong Electron runtime)
+- L6 abuse hourly/weekly → ✅ ĐÃ FIX: antigravity trả `hourly/weekly` = emptyWindow (trung tính) thay vì ép models[0..1]
+- L10 cross-machine note → ✅ ĐÃ FIX: README ghi rõ snapshot gắn máy
 
 ---
 

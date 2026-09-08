@@ -216,14 +216,26 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 3. Liên kết auth bằng một trong các cách:
    - **Import từ VS Code** — chụp snapshot `github.auth` trong `state.vscdb` hiện tại
    - **Chọn file snapshot** — import snapshot JSON đã lưu
-4. **Chuyển sang** để inject token vào `state.vscdb` của VS Code (prod; dev cần flag `AI_SWITCHER_APPLY_COPILOT_IDE=1`)
+4. *(Khuyến nghị)* **Đăng nhập GitHub cho slot này** — device flow `read:user`, quota của slot sẽ đọc bằng token riêng (đúng account) thay vì token máy (`gh` CLI)
+5. **Chuyển sang** để inject token vào `state.vscdb` của VS Code (prod; dev cần flag `AI_SWITCHER_APPLY_COPILOT_IDE=1`)
+
+> Lưu ý: snapshot `github.auth` của VS Code được mã hóa theo máy (Keychain/DPAPI) —
+> file snapshot chỉ dùng được trên máy đã capture, không copy chéo máy. Token device
+> flow (bước 4) cũng vậy vì gắn với slot trong `~/.ai-switcher/copilot-auth/`.
 
 ### Xem quota
 
 - **FreeModel**: cần đăng nhập dashboard (OTP). API key alone không đủ quyền đọc quota.
 - **ChatGPT**: auth OAuth hợp lệ, quota theo %
 - **Antigravity**: theo từng model (Claude, Gemini...) với cửa sổ 5h / 7 ngày, % đã dùng + thời gian reset
-- **GitHub Copilot**: premium requests theo % (GitHub Copilot usage API)
+- **GitHub Copilot**: premium requests theo % (GitHub Copilot usage API). Dùng token riêng của slot nếu đã đăng nhập device flow; fallback token máy (`gh` CLI) kèm cảnh báo nếu lệch account
+
+## Chạy test
+
+```bash
+npm test           # unit tests (vitest): quota parsing, storage migration, key filter
+npm run test:driver  # e2e driver tests (chạy trong Electron runtime, cần npm run rebuild:native trước)
+```
 
 ## Roadmap
 

@@ -1,10 +1,15 @@
 import { execFile, spawn } from 'child_process'
-import { access, copyFile, mkdir } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
 import type { AntigravityAccountEntry } from './antigravity-auth-storage'
 import { shouldApplyAntigravityIde } from './env'
+import {
+  backupDatabase,
+  fileExists,
+  getSqliteDriver,
+  withDbLock
+} from './sqlite-db'
 import {
   createMinimalUserStatusPayload,
   createOAuthInfo,
@@ -25,15 +30,6 @@ export interface AntigravityIdeApplyResult {
   dbPath?: string
   restarted?: boolean
   message?: string
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
-  }
 }
 
 export function getAntigravityIdeDbCandidates(): string[] {
@@ -64,47 +60,6 @@ export async function resolveAntigravityIdeDbPath(): Promise<string | null> {
     }
   }
   return getAntigravityIdeDbCandidates()[0] ?? null
-}
-
-function escapeSqlString(value: string): string {
-  return value.replace(/'/g, "''")
-}
-
-async function sqliteQuery(dbPath: string, sql: string): Promise<string> {
-  const { stdout } = await execFileAsync('sqlite3', [dbPath, sql], {
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024
-  })
-  return stdout.trimEnd()
-}
-
-async function sqliteExec(dbPath: string, sql: string): Promise<void> {
-  await execFileAsync('sqlite3', [dbPath, sql], {
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024
-  })
-}
-
-async function readDbValue(dbPath: string, key: string): Promise<string | null> {
-  const row = await sqliteQuery(
-    dbPath,
-    `SELECT value FROM ItemTable WHERE key = '${escapeSqlString(key)}' LIMIT 1;`
-  )
-  return row.length > 0 ? row : null
-}
-
-async function writeDbValue(dbPath: string, key: string, value: string): Promise<void> {
-  await sqliteExec(
-    dbPath,
-    `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${escapeSqlString(key)}', '${escapeSqlString(value)}');`
-  )
-}
-
-async function deleteDbValue(dbPath: string, key: string): Promise<void> {
-  await sqliteExec(
-    dbPath,
-    `DELETE FROM ItemTable WHERE key = '${escapeSqlString(key)}';`
-  )
 }
 
 async function isAntigravityIdeRunning(): Promise<boolean> {
@@ -140,7 +95,8 @@ async function isAntigravityIdeRunning(): Promise<boolean> {
   }
 
   try {
-    const { stdout } = await execFileAsync('pgrep', ['-f', 'antigravity'], { encoding: 'utf8' })
+    // -x: khớp chính xác tên process, tránh giết nhầm process có 'antigravity' trong path
+    const { stdout } = await execFileAsync('pgrep', ['-x', 'antigravity'], { encoding: 'utf8' })
     return stdout.trim().length > 0
   } catch {
     return false
@@ -163,7 +119,7 @@ async function quitAntigravityIde(): Promise<void> {
       () => undefined
     )
   } else {
-    await execFileAsync('pkill', ['-f', 'antigravity'], { encoding: 'utf8' }).catch(() => undefined)
+    await execFileAsync('pkill', ['-x', 'antigravity'], { encoding: 'utf8' }).catch(() => undefined)
   }
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -201,6 +157,7 @@ async function openAntigravityIde(): Promise<void> {
 }
 
 async function injectOAuthToken(
+  driver: Awaited<ReturnType<typeof getSqliteDriver>>,
   dbPath: string,
   accessToken: string,
   refreshToken: string,
@@ -208,34 +165,36 @@ async function injectOAuthToken(
   email: string
 ): Promise<void> {
   const oauthInfo = createOAuthInfo(accessToken, refreshToken, expiry, email)
-  const currentB64 = await readDbValue(dbPath, OAUTH_TOKEN_KEY)
+  const currentB64 = await driver.readValue(dbPath, OAUTH_TOKEN_KEY)
   const currentTopic = currentB64 ? Buffer.from(currentB64, 'base64') : Buffer.alloc(0)
   const mergedTopic = Buffer.concat([
     removeUnifiedTopicEntry(currentTopic, 'oauthTokenInfoSentinelKey'),
     createUnifiedTopicEntry('oauthTokenInfoSentinelKey', oauthInfo)
   ])
-  await writeDbValue(dbPath, OAUTH_TOKEN_KEY, mergedTopic.toString('base64'))
 
   const userStatusPayload = createMinimalUserStatusPayload(email)
-  await writeDbValue(
-    dbPath,
-    USER_STATUS_KEY,
-    createUnifiedStateEntry('userStatusSentinelKey', userStatusPayload)
-  )
 
-  await writeDbValue(dbPath, 'antigravityOnboarding', 'true')
-  await deleteDbValue(dbPath, 'jetskiStateSync.agentManagerInitState')
+  await driver.writeValues(dbPath, {
+    [OAUTH_TOKEN_KEY]: mergedTopic.toString('base64'),
+    [USER_STATUS_KEY]: createUnifiedStateEntry('userStatusSentinelKey', userStatusPayload),
+    antigravityOnboarding: 'true'
+  })
+  await driver.deleteValues(dbPath, ['jetskiStateSync.agentManagerInitState'])
 }
 
-async function injectEnterpriseProject(dbPath: string, projectId?: string): Promise<void> {
+async function injectEnterpriseProject(
+  driver: Awaited<ReturnType<typeof getSqliteDriver>>,
+  dbPath: string,
+  projectId?: string
+): Promise<void> {
   const trimmed = projectId?.trim()
   if (!trimmed) {
-    await deleteDbValue(dbPath, ENTERPRISE_PREFS_KEY)
+    await driver.deleteValues(dbPath, [ENTERPRISE_PREFS_KEY])
     return
   }
 
   const payload = createStringValuePayload(trimmed)
-  await writeDbValue(
+  await driver.writeValue(
     dbPath,
     ENTERPRISE_PREFS_KEY,
     createUnifiedStateEntry('enterpriseGcpProjectId', payload)
@@ -272,36 +231,31 @@ export async function applyAntigravityIdeAccount(
   }
 
   try {
-    await execFileAsync('sqlite3', ['--version'], { encoding: 'utf8' })
-  } catch {
+    await getSqliteDriver()
+  } catch (error) {
     return {
       applied: false,
       dbPath,
-      message: 'Cần cài sqlite3 CLI để đồng bộ Antigravity IDE'
+      message: error instanceof Error ? error.message : 'Không khởi tạo được SQLite'
     }
   }
-
-  const parentDir = join(dbPath, '..')
-  await mkdir(parentDir, { recursive: true })
 
   const wasRunning = await isAntigravityIdeRunning()
   if (wasRunning) {
     await quitAntigravityIde()
   }
 
-  const backupPath = `${dbPath}.ai-switcher.bak`
-  if (await fileExists(dbPath)) {
-    await copyFile(dbPath, backupPath)
-  } else {
-    await sqliteExec(
-      dbPath,
-      'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY ON CONFLICT REPLACE, value BLOB);'
-    )
-  }
+  await withDbLock(dbPath, async () => {
+    if (await fileExists(dbPath)) {
+      await backupDatabase(dbPath)
+    }
 
-  const expiry = Math.floor(Date.now() / 1000) + Math.max(tokens.expiresIn, 300)
-  await injectOAuthToken(dbPath, tokens.accessToken, entry.refreshToken, expiry, email)
-  await injectEnterpriseProject(dbPath, entry.projectId ?? entry.managedProjectId)
+    const driver = await getSqliteDriver()
+    const expiry = Math.floor(Date.now() / 1000) + Math.max(tokens.expiresIn, 300)
+    await injectOAuthToken(driver, dbPath, tokens.accessToken, entry.refreshToken, expiry, email)
+    await injectEnterpriseProject(driver, dbPath, entry.projectId ?? entry.managedProjectId)
+    await driver.finalize(dbPath)
+  })
 
   let restarted = false
   if (wasRunning) {
@@ -326,7 +280,8 @@ export async function readAntigravityIdeEmail(): Promise<string | null> {
   }
 
   try {
-    const userStatusB64 = await readDbValue(dbPath, USER_STATUS_KEY)
+    const driver = await getSqliteDriver()
+    const userStatusB64 = await driver.readValue(dbPath, USER_STATUS_KEY)
     if (!userStatusB64) {
       return null
     }

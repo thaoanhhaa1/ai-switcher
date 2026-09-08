@@ -396,8 +396,11 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       message: messageParts.join(' · ') || undefined,
       limitReached: limitedModels.length > 0,
       models,
-      hourly: models[0] ?? emptyWindow,
-      weekly: models[1] ?? emptyWindow,
+      // hourly/weekly là field legacy (chỉ render khi models rỗng — QuotaPanel
+      // ưu tiên models). Điền giá trị trung tính thay vì ép models[0..1] vào
+      // ngữ nghĩa "Quota 5 giờ/7 ngày" sai lệch (CODE_REVIEW L6).
+      hourly: emptyWindow,
+      weekly: emptyWindow,
       codeReview: null,
       updatedAt: new Date().toISOString()
     }

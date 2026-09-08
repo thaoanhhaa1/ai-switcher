@@ -48,11 +48,19 @@ export interface AntigravityLoginStatus {
   message?: string
 }
 
+export interface CopilotDeviceLoginStart {
+  userCode: string
+  verificationUri: string
+  expiresInSeconds: number
+}
+
 export interface CopilotLoginStatus {
   loggedIn: boolean
   username?: string
   targets?: string[]
   message?: string
+  /** Slot có GitHub token riêng (device flow) để đọc quota đúng account */
+  hasOwnToken?: boolean
 }
 
 export interface UsageEvent {
@@ -238,6 +246,9 @@ export interface Api {
   importCopilotFromFile: (accountId: string, filePath: string) => Promise<CopilotLoginStatus>
   logoutCopilot: (accountId: string) => Promise<void>
   pickCopilotSnapshotFile: () => Promise<string | null>
+  startCopilotDeviceLogin: (accountId: string) => Promise<CopilotDeviceLoginStart>
+  waitForCopilotDeviceLogin: (accountId: string) => Promise<CopilotLoginStatus>
+  cancelCopilotDeviceLogin: (accountId: string) => Promise<void>
   openCodexDir: () => Promise<void>
   openAntigravityDir: () => Promise<void>
   openCopilotDir: () => Promise<void>

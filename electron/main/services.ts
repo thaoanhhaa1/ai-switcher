@@ -10,6 +10,7 @@ import type {
     AppData,
     ChatGptLoginStatus,
     CodexSettings,
+    CopilotDeviceLoginStart,
     CopilotLoginStatus,
     FreeModelLoginStatus,
     ProviderId,
@@ -70,6 +71,7 @@ import {
 import {
     COPILOT_DOCS,
     applyCopilotAccount,
+    cancelCopilotDeviceLogin,
     clearCopilotAuth,
     DEFAULT_COPILOT_SETTINGS,
     fetchCopilotQuota,
@@ -78,6 +80,8 @@ import {
     importCopilotFromLive,
     readLiveCopilotUsernameForStatus,
     snapshotLiveCopilotToAccount,
+    startCopilotDeviceLogin,
+    waitForCopilotDeviceLogin,
 } from './providers/github-copilot';
 import { isValidCopilotEntry, loadStoredCopilotAccount } from './copilot-auth-storage';
 import { hasLiveCopilotAuth } from './copilot-ide';
@@ -1004,7 +1008,32 @@ export async function importCopilotFileAccount(
 }
 
 export async function logoutCopilotAccount(accountId: string): Promise<void> {
+    await cancelCopilotDeviceLogin(accountId);
     await clearCopilotAuth(accountId);
+}
+
+export async function startCopilotLogin(
+    accountId: string,
+): Promise<CopilotDeviceLoginStart> {
+    return startCopilotDeviceLogin(accountId);
+}
+
+export async function waitCopilotLogin(accountId: string): Promise<CopilotLoginStatus> {
+    const status = await waitForCopilotDeviceLogin(accountId);
+    const data = await loadAppData();
+    await appendUsageEvent(data, {
+        accountId,
+        accountName: findAccount(data, accountId)?.name ?? accountId,
+        provider: 'github-copilot',
+        action: 'login',
+        success: true,
+        message: 'Đăng nhập GitHub (device flow) thành công',
+    });
+    return status;
+}
+
+export async function cancelCopilotLogin(accountId: string): Promise<void> {
+    await cancelCopilotDeviceLogin(accountId);
 }
 
 export async function pickCopilotSnapshotFile(): Promise<string | null> {

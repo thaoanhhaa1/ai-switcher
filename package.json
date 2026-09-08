@@ -7,12 +7,14 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
     "rebuild:native": "electron-builder install-app-deps",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
     "package:mac": "electron-vite build && electron-builder --mac",
     "package:win": "electron-vite build && electron-builder --win",
-    "package:linux": "electron-vite build && electron-builder --linux"
+    "package:linux": "electron-vite build && electron-builder --linux",
+    "test:driver": "node tests/e2e/run-driver-tests.cjs"
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
@@ -33,7 +35,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "typescript": "^5.8.2",
-    "vite": "^6.2.1"
+    "vite": "^6.2.1",
+    "vitest": "^4.1.11"
   },
   "build": {
     "appId": "dev.aiswitcher.app",

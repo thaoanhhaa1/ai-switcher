@@ -31,6 +31,9 @@ import {
   pickAntigravityAccountsFile,
   pickAuthJsonFile,
   pickCopilotSnapshotFile,
+  cancelCopilotLogin,
+  startCopilotLogin,
+  waitCopilotLogin,
   getAntigravityStatus,
   getCopilotStatus,
   sendAccountOtp,
@@ -128,6 +131,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('copilot:logout', (_event, accountId) => logoutCopilotAccount(accountId))
   ipcMain.handle('copilot:pickSnapshotFile', () => pickCopilotSnapshotFile())
+  ipcMain.handle('copilot:deviceLoginStart', (_event, accountId) => startCopilotLogin(accountId))
+  ipcMain.handle('copilot:deviceLoginWait', (_event, accountId) => waitCopilotLogin(accountId))
+  ipcMain.handle('copilot:deviceLoginCancel', (_event, accountId) => cancelCopilotLogin(accountId))
   ipcMain.handle('codex:openDir', () => openCodexDir())
   ipcMain.handle('antigravity:openDir', () => openAntigravityDir())
   ipcMain.handle('copilot:openDir', () => openCopilotDir())

@@ -24,6 +24,7 @@ import {
 import { formatResetAt } from '../quota-utils'
 import { getAppDataDir } from '../paths'
 import { findAccount, loadAppData } from '../storage'
+import { pollForToken, requestDeviceCode } from '../copilot-device-flow'
 
 const execFileAsync = promisify(execFile)
 
@@ -136,7 +137,7 @@ function buildEmptyQuota(message?: string): AccountQuota {
   }
 }
 
-function mapPercentCategory(
+export function mapPercentCategory(
   category?: CopilotQuotaCategory,
   label?: string
 ): QuotaWindow | null {
@@ -426,7 +427,92 @@ export async function getCopilotLoginStatus(accountId: string): Promise<CopilotL
   return {
     loggedIn: true,
     username: entry.username,
-    targets: getSnapshotTargets(entry)
+    targets: getSnapshotTargets(entry),
+    hasOwnToken: Boolean(entry.githubToken)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub device flow login (token riêng per-slot cho quota — CODE_REVIEW H1)
+// ---------------------------------------------------------------------------
+
+const pendingLogins = new Map<string, AbortController>()
+
+export interface CopilotDeviceLoginStart {
+  userCode: string
+  verificationUri: string
+  expiresInSeconds: number
+}
+
+export async function startCopilotDeviceLogin(accountId: string): Promise<CopilotDeviceLoginStart> {
+  if (pendingLogins.has(accountId)) {
+    throw new Error('Đang có phiên đăng nhập GitHub cho slot này. Hãy đợi hoặc hủy trước.')
+  }
+
+  const device = await requestDeviceCode()
+  const controller = new AbortController()
+  pendingLogins.set(accountId, controller)
+
+  // Poll ngầm; kết quả được lấy qua waitForCopilotDeviceLogin
+  void pollForToken(device.device_code, device.interval, controller.signal)
+    .then(async (result) => {
+      const existing = await loadStoredCopilotAccount(accountId)
+      if (!existing) {
+        throw new Error('Slot chưa có auth Copilot. Hãy import auth từ VS Code trước.')
+      }
+      await saveStoredCopilotAccount(accountId, {
+        ...existing,
+        githubToken: result.accessToken,
+        githubLogin: result.login ?? existing.username
+      })
+      pendingLogins.delete(accountId)
+    })
+    .catch(() => {
+      pendingLogins.delete(accountId)
+    })
+
+  return {
+    userCode: device.user_code,
+    verificationUri: device.verification_uri,
+    expiresInSeconds: device.expires_in
+  }
+}
+
+export async function waitForCopilotDeviceLogin(accountId: string): Promise<CopilotLoginStatus> {
+  const controller = pendingLogins.get(accountId)
+  if (!controller) {
+    // Không có phiên pending — có thể đã hoàn tất từ lần gọi trước
+    const status = await getCopilotLoginStatus(accountId)
+    if (!status.hasOwnToken) {
+      throw new Error('Không có phiên đăng nhập GitHub đang chạy. Hãy bắt đầu lại.')
+    }
+    return status
+  }
+
+  // Chờ tới khi entry biến mất khỏi map (hoàn tất/thất bại/hủy), tối đa 10 phút
+  const startedAt = Date.now()
+  while (pendingLogins.get(accountId) === controller && Date.now() - startedAt < 600_000) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  if (pendingLogins.get(accountId) === controller) {
+    controller.abort()
+    pendingLogins.delete(accountId)
+    throw new Error('Hết thời gian chờ đăng nhập GitHub. Hãy thử lại.')
+  }
+
+  const status = await getCopilotLoginStatus(accountId)
+  if (!status.hasOwnToken) {
+    throw new Error('Đăng nhập GitHub thất bại hoặc bị hủy. Hãy thử lại.')
+  }
+  return status
+}
+
+export async function cancelCopilotDeviceLogin(accountId: string): Promise<void> {
+  const controller = pendingLogins.get(accountId)
+  if (controller) {
+    controller.abort()
+    pendingLogins.delete(accountId)
   }
 }
 
@@ -504,10 +590,13 @@ export async function fetchCopilotQuota(accountId: string): Promise<AccountQuota
     return buildEmptyQuota('Chưa đăng nhập Copilot. Hãy import từ VS Code/Cursor.')
   }
 
-  const token = await resolveCopilotToken()
+  // Ưu tiên token riêng của slot (device flow — quota ĐÚNG account);
+  // fallback token machine-level (gh CLI / apps.json) cho slot cũ (CODE_REVIEW H1).
+  const ownToken = stored.githubToken?.trim() || null
+  const token = ownToken ?? (await resolveCopilotToken())
   if (!token) {
     return buildEmptyQuota(
-      'Không tìm thấy GitHub token. Chạy `gh auth login` hoặc đăng nhập Copilot trong IDE.'
+      'Không tìm thấy GitHub token. Đăng nhập GitHub trong dialog slot này hoặc chạy `gh auth login`.'
     )
   }
 
@@ -573,9 +662,6 @@ export async function fetchCopilotQuota(accountId: string): Promise<AccountQuota
     const hasActiveLimits = hourly.limitCents > 0 || weekly.limitCents > 0
     const plan = data.copilot_plan ?? data.access_type_sku
 
-    // Token dùng để đọc quota là token MACHINE-LEVEL (gh CLI / apps.json),
-    // không phải token của slot → phải cảnh báo khi login của token ≠ username slot
-    // (xem CODE_REVIEW H1 — tránh hiển thị quota của account khác như của slot này).
     const slotUsername = stored.username?.trim()
     const loginMismatch = Boolean(
       data.login && slotUsername && data.login.toLowerCase() !== slotUsername.toLowerCase()
@@ -583,7 +669,12 @@ export async function fetchCopilotQuota(accountId: string): Promise<AccountQuota
 
     const messageParts = [
       loginMismatch
-        ? `⚠ Quota của @${data.login} (token máy), không phải @${slotUsername} của slot này`
+        ? ownToken
+          ? `⚠ Token của slot này thuộc @${data.login}, không phải @${slotUsername} — hãy đăng nhập lại GitHub`
+          : `⚠ Quota của @${data.login} (token máy), không phải @${slotUsername} — đăng nhập GitHub trong slot để xem đúng quota`
+        : undefined,
+      !ownToken && !loginMismatch
+        ? 'Đang dùng token máy (gh CLI) — đăng nhập GitHub trong slot để khóa quota theo account'
         : undefined,
       plan ? `Plan: ${plan}` : undefined,
       slotUsername ? `GitHub: @${slotUsername}` : undefined

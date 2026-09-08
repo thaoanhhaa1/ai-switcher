@@ -12,6 +12,13 @@ export interface CopilotAccountEntry {
   username: string
   snapshots: Partial<Record<CopilotIdeTarget, CopilotIdeSnapshot>>
   capturedAt?: string
+  /**
+   * GitHub token riêng của slot (device flow, scope read:user) — dùng để đọc
+   * quota đúng account thay vì token machine-level (gh CLI). Optional: slot
+   * cũ chỉ import từ VS Code sẽ không có và dùng fallback machine token.
+   */
+  githubToken?: string
+  githubLogin?: string
 }
 
 function getStorageDir(): string {
