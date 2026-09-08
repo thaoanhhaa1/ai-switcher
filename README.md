@@ -131,9 +131,13 @@ Nếu chưa cài global, app tự tìm binary tại các vị trí sau (theo th�
 
 ```bash
 npm install
+npm run rebuild:native   # build better-sqlite3 cho ABI của Electron (cần cho đồng bộ Copilot/IDE)
 cp .env.example .env.development   # tùy chọn
 npm run dev
 ```
+
+> `rebuild:native` chạy `electron-builder install-app-deps`, biên dịch `better-sqlite3` đúng ABI Electron.
+> Nếu bỏ qua, app tự fallback sang `sqlite3` CLI (nếu có) cho thao tác với `state.vscdb`.
 
 **Dev mode** (`npm run dev`) dùng sandbox riêng, không đụng config production:
 
@@ -146,6 +150,8 @@ npm run dev
 | VS Code (Copilot) | Bỏ qua (trừ khi bật flag) | Đồng bộ `state.vscdb` |
 
 Override bằng biến môi trường trong `.env.development` / `.env.production` (xem `.env.example`).
+
+**Đồng bộ GitHub Copilot** ghi vào `state.vscdb` của VS Code qua `better-sqlite3` (native). Để trỏ DB của target `vscode` vào file khác khi test, đặt `COPILOT_IDE_DB_PATH=/custom/state.vscdb`.
 
 ## Build app
 
