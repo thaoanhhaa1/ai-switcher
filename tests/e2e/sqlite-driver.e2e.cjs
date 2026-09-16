@@ -82,9 +82,96 @@ async function main() {
     assert.ok(!all.includes('github-otheruser'), 'entry user cũ phải bị clear')
   })
 
+  // ===== N1: applyCopilotEntries TỰ finalize (WAL checkpoint + dọn sidecar) =====
+  await t('N1: apply trên DB WAL → không còn -wal/-shm tồn đọng, data đọc lại đúng', async () => {
+    const { dbPath: walDb, sh: shW } = makeDb()
+    shW('PRAGMA journal_mode=WAL;')
+    shW(`INSERT INTO ItemTable VALUES ('github.copilot-github', 'waluser');`)
+    await applyCopilotEntries(walDb, { [AUTH_KEY]: 'wal-token' }, 'waluser')
+    assert.ok(!fs.existsSync(walDb + '-wal'), 'WAL sidecar phải được checkpoint + xóa sau apply')
+    assert.ok(!fs.existsSync(walDb + '-shm'), 'SHM sidecar phải được xóa sau apply')
+    const entries = (await collectCopilotEntries(walDb)).entries
+    assert.equal(entries[AUTH_KEY], 'wal-token', 'data vẫn đọc đúng sau finalize')
+    fs.rmSync(walDb, { force: true })
+  })
+
+  // ===== R5 LOW 2: checkpoint busy (process ngoài giữ WAL) → GIỮ sidecar =====
+  // Hành vi đã kiểm chứng bằng thực nghiệm: wal_checkpoint(TRUNCATE) BỊ CHẶN
+  // không ném lỗi — better-sqlite3 trả [{busy:1}], CLI in "1|log|ckpt" exit 0.
+  // Fix đúng: chỉ removeWalSidecars khi busy=0. Test: process sqlite3 ngoài mở
+  // read transaction (snapshot cũ) trong suốt lượt apply → checkpoint không
+  // complete được → -wal PHẢI còn (xóa sẽ vứt frame đã commit chưa flush).
+  await t('R5 LOW 2: reader ngoài giữ WAL snapshot → finalize busy → giữ -wal, data nguyên vẹn', async () => {
+    const { dbPath: busyDb, sh: shB } = makeDb()
+    shB('PRAGMA journal_mode=WAL;')
+    shB(`INSERT INTO ItemTable VALUES ('github.copilot-github', 'busyuser');`)
+
+    const reader = require('node:child_process').spawn('sqlite3', [busyDb], {
+      stdio: ['pipe', 'ignore', 'ignore']
+    })
+    reader.on('error', () => undefined)
+    reader.stdin.write('BEGIN;\nSELECT count(*) FROM ItemTable;\n')
+    await new Promise((r) => setTimeout(r, 500)) // reader kịp lấy read snapshot
+
+    // apply: writes OK (WAL không block reader), finalize gặp checkpoint busy.
+    // native: checkpoint chờ busy_timeout=10s rồi mới trả busy → test này ~11s.
+    await applyCopilotEntries(busyDb, { [AUTH_KEY]: 'busy-token' }, 'busyuser')
+    assert.ok(
+      fs.existsSync(busyDb + '-wal'),
+      'checkpoint blocked → -wal phải được GIỮ LẠI (chứa frame đã commit, chưa flush)'
+    )
+    const entriesBusy = (await collectCopilotEntries(busyDb)).entries
+    assert.equal(entriesBusy[AUTH_KEY], 'busy-token', 'đọc xuyên WAL: token đã commit không mất')
+
+    // applyCopilotEntries đã return ⇒ finalize đã chạy xong (busy). Nhả reader
+    // → lượt apply kế tiếp hết contention → checkpoint OK → sidecar được dọn.
+    reader.stdin.write('COMMIT;\n')
+    reader.stdin.end()
+    await new Promise((r) => reader.on('close', r))
+    await applyCopilotEntries(busyDb, { [AUTH_KEY]: 'busy-token' }, 'busyuser')
+    assert.ok(!fs.existsSync(busyDb + '-wal'), 'hết contention → finalize dọn sạch sidecar')
+    const entriesAfter = (await collectCopilotEntries(busyDb)).entries
+    assert.equal(entriesAfter[AUTH_KEY], 'busy-token', 'data bền vững sau checkpoint thật')
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(busyDb + suffix, { force: true })
+  })
+
+  // ===== R6 L2: busy timeout + message tiếng Việt khi DB bị giữ (native: busy_timeout pragma + translateBusyError) =====
+  await t('R6 L2: write khi DB bị giữ → chờ busy timeout rồi trả lỗi tiếng Việt', async () => {
+    const { dbPath: lockDb, sh: shL } = makeDb()
+    shL('PRAGMA journal_mode=WAL;')
+    shL(`INSERT INTO ItemTable VALUES ('github.copilot-github', 'lockuser');`)
+
+    const writer = require('node:child_process').spawn('sqlite3', [lockDb], {
+      stdio: ['pipe', 'ignore', 'ignore']
+    })
+    writer.on('error', () => undefined)
+    writer.stdin.write('BEGIN IMMEDIATE;\n')
+    await new Promise((r) => setTimeout(r, 500))
+
+    const started = Date.now()
+    await assert.rejects(
+      () => applyCopilotEntries(lockDb, { [AUTH_KEY]: 'lock-token' }, 'lockuser'),
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        assert.ok(
+          /state\.vscdb đang bị khóa/.test(message),
+          `message phải dịch tiếng Việt, nhận: ${message.slice(0, 160)}`
+        )
+        return true
+      }
+    )
+    const elapsed = Date.now() - started
+    assert.ok(elapsed >= 3000, `phải chờ busy_timeout trước khi báo lỗi (elapsed ${elapsed}ms)`)
+
+    writer.stdin.write('ROLLBACK;\n')
+    writer.stdin.end()
+    await new Promise((r) => writer.on('close', r))
+    fs.rmSync(lockDb, { force: true })
+  })
+
   // ===== JSONC: C1 — settings.json có comment KHÔNG bị wipe (test qua jsonc-parser trực tiếp) =====
   await t('jsonc modify: chèn preferredAccount giữ nguyên comment (C1)', () => {
-    const { modify, applyEdits, parse } = require('/Users/thaoanhhaa1/Documents/IT/Personal/Projects/ai-switcher/node_modules/jsonc-parser')
+    const { modify, applyEdits, parse } = require('jsonc-parser')
     const raw = `{\n  // editor theme của user\n  "workbench.colorTheme": "Default Dark",\n  "editor.fontSize": 14\n}`
     const parsed = parse(raw)
     assert.equal(typeof parsed, 'object', 'jsonc parse OK với comment')
@@ -95,7 +182,7 @@ async function main() {
     assert.ok(next.includes('"github.copilot.preferredAccount": "testuser"'), 'key mới được chèn')
   })
   await t('jsonc parse: input rác → undefined (không throw) → code phải skip write', () => {
-    const { parse } = require('/Users/thaoanhhaa1/Documents/IT/Personal/Projects/ai-switcher/node_modules/jsonc-parser')
+    const { parse } = require('jsonc-parser')
     assert.equal(parse('this is not json at all <<<'), undefined)
   })
 

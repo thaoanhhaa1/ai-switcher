@@ -8,36 +8,53 @@
  * Không có args → chạy cả 2 suite: sqlite-driver.e2e.cjs + sqlite-driver-fallback.e2e.cjs
  */
 const { execFileSync } = require('node:child_process')
-const { mkdtempSync, writeFileSync } = require('node:fs')
-const { tmpdir } = require('node:os')
 const { join, resolve } = require('node:path')
 
 const root = resolve(__dirname, '..', '..')
-const electronBin = join(root, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
 
-// Windows/Linux: electron binary nằm chỗ khác — chỉ hỗ trợ macOS cho driver e2e
-if (process.platform !== 'darwin') {
-  console.log('test:driver chỉ hỗ trợ macOS (đường dẫn Electron binary). Bỏ qua.')
-  process.exit(0)
+/**
+ * N4: resolve đường dẫn Electron binary cross-platform.
+ * `require('electron')` từ plain Node trả về đúng path binary cho mọi OS
+ * (electron npm trỏ qua dist/path.txt). Fallback thủ công nếu require fail.
+ */
+function resolveElectronBin() {
+  try {
+    const electronPath = require(join(root, 'node_modules', 'electron'))
+    if (typeof electronPath === 'string' && electronPath.length) return electronPath
+  } catch {
+    // fall through
+  }
+  const dist = join(root, 'node_modules', 'electron', 'dist')
+  if (process.platform === 'darwin') {
+    return join(dist, 'Electron.app', 'Contents', 'MacOS', 'Electron')
+  }
+  if (process.platform === 'win32') {
+    return join(dist, 'electron.exe')
+  }
+  return join(dist, 'electron')
 }
 
-const esbuild = resolve(root, 'node_modules', '.bin', 'esbuild')
+const electronBin = resolveElectronBin()
+
 const cacheDir = join(root, 'node_modules', '.cache')
 require('node:fs').mkdirSync(cacheDir, { recursive: true })
 const bundlePath = join(cacheDir, 'driver-bundle.cjs')
 
 function buildBundle() {
-  execFileSync(esbuild, [
-    join(__dirname, 'driver-entry.ts'),
-    '--bundle',
-    '--format=cjs',
-    '--platform=node',
-    '--target=node18',
-    '--external:better-sqlite3',
-    '--external:jsonc-parser',
-    `--alias:electron=${join(__dirname, 'stub-electron.cjs')}`,
-    `--outfile=${bundlePath}`
-  ], { stdio: 'inherit', cwd: root })
+  // N4: dùng JS API của esbuild (auto-find binary theo platform) thay vì
+  // spawn `node_modules/.bin/esbuild` — shim .bin là shell script trên
+  // POSIX và .cmd trên Windows (execFileSync không chạy được .cmd).
+  const esbuild = require('esbuild')
+  esbuild.buildSync({
+    entryPoints: [join(__dirname, 'driver-entry.ts')],
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    external: ['better-sqlite3', 'jsonc-parser'],
+    alias: { electron: join(__dirname, 'stub-electron.cjs') },
+    outfile: bundlePath
+  })
 }
 
 function runSuite(testFile) {

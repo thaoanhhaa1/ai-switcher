@@ -120,6 +120,14 @@ export interface ProviderOptions {
 }
 
 export interface QuotaWindow {
+  /**
+   * LƯU Ý (CODE_REVIEW_QUOTA_GROUPS N5): khi `displayMode = 'percent'`
+   * (antigravity — cả layout 'models' lẫn 'groups'), bộ ba `*Cents` KHÔNG chứa
+   * tiền. Theo pattern của `buildModelQuota`/`parseAntigravityGroupQuotas`,
+   * chúng nạp giá trị PHẦN TRĂM: usedCents = usedPercent, limitCents = 100,
+   * remainingCents = remainingPercent. Render '$' hay '%' phải dựa vào
+   * `AccountQuota.displayMode`, không đoán từ độ lớn giá trị.
+   */
   usedCents: number
   limitCents: number
   remainingCents: number
@@ -143,6 +151,11 @@ export interface QuotaCredits {
 export interface ModelQuotaWindow {
   windowId: string
   windowLabel: string
+  /**
+   * bucketId gốc từ API (antigravity summary) nếu có — cho React key ổn định
+   * khi 2 bucket trùng windowId + windowSeconds (CODE_REVIEW_QUOTA_GROUPS N2).
+   */
+  bucketId?: string
   windowSeconds?: number
   usedPercent: number
   remainingPercent: number
@@ -163,6 +176,12 @@ export interface AccountQuota {
   available: boolean
   hasActiveLimits: boolean
   message?: string
+  /** 'groups' = mỗi model entry là 1 NHÓM (Gemini / Claude&GPT), render cả windows inline */
+  quotaLayout?: 'models' | 'groups'
+  /**
+   * Nguồn chân lý duy nhất để biết bộ ba `*Cents` là TIỀN hay PHẦN TRĂM
+   * (xem ghi chú N5 trên `QuotaWindow`) — 'percent' = antigravity quota nhóm.
+   */
   displayMode?: 'cents' | 'percent'
   planType?: string
   email?: string

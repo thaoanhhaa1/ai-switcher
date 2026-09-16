@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
 import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser'
-import { backupDatabase, fileExists, getSqliteDriver, getSqliteDriverName, withDbLock } from './sqlite-db'
+import { backupDatabase, fileExists, getSqliteDriver, withDbLock } from './sqlite-db'
 import { shouldApplyCopilotIde } from './env'
 
 const execFileAsync = promisify(execFile)
@@ -137,17 +137,13 @@ export function getCopilotIdeCandidates(): CopilotIdeInfo[] {
 
 /** Tên driver SQLite đang dùng — cho test + log debug ('better-sqlite3' | 'sqlite3-cli'). */
 export async function getActiveDriverName(): Promise<string> {
-  return getSqliteDriverName()
+  const driver = await getSqliteDriver()
+  return driver.name
 }
 
 async function readDbValue(dbPath: string, key: string): Promise<string | null> {
   const driver = await getSqliteDriver()
   return driver.readValue(dbPath, key)
-}
-
-async function deleteDbValue(dbPath: string, key: string): Promise<void> {
-  const driver = await getSqliteDriver()
-  await driver.deleteValues(dbPath, [key])
 }
 
 async function listMatchingKeys(dbPath: string, likePattern: string): Promise<string[]> {
@@ -336,7 +332,8 @@ async function updateCopilotPreferredAccount(ide: CopilotIdeInfo, username: stri
   await writeFile(settingsPath, applyEdits(raw, edits), 'utf-8')
 }
 
-async function clearCopilotEntries(dbPath: string, username?: string): Promise<void> {
+/** Trả về số dòng THỰC SỰ bị xóa (R5 INFO 1: phục vụ gate finalize). */
+async function clearCopilotEntries(dbPath: string, username?: string): Promise<number> {
   const keysToDelete = new Set<string>(STATIC_KEYS)
 
   for (const prefix of STATIC_PREFIXES) {
@@ -352,9 +349,14 @@ async function clearCopilotEntries(dbPath: string, username?: string): Promise<v
     .filter((key) => isCopilotRelatedKey(key, username))
     .forEach((key) => keysToDelete.add(key))
 
-  for (const key of keysToDelete) {
-    await deleteDbValue(dbPath, key)
-  }
+  // R8 L1 (sửa lại comment R6 L3 cho trung thực): COPILOT_CHAT_KEY ĐÃ nằm sẵn
+  // trong STATIC_KEYS (`:36`, từ trước HEAD 8105688) — batch dưới vốn đã xóa nó,
+  // không cần (và không được) `add` tách riêng. Bản cũ có lệnh
+  // deleteDbValue(COPILOT_CHAT_KEY) thứ hai chỉ là redundant (Set đã chứa key —
+  // DELETE chạy 2 lần ra cùng kết quả), không phải vì key vắng mặt. Không có
+  // guard `!keysToDelete.size` (R8 INFO 3): STATIC_KEYS luôn non-empty.
+  const driver = await getSqliteDriver()
+  return driver.deleteValues(dbPath, [...keysToDelete])
 }
 
 export async function applyCopilotEntries(
@@ -362,15 +364,25 @@ export async function applyCopilotEntries(
   entries: Record<string, string>,
   username?: string
 ): Promise<void> {
-  await clearCopilotEntries(dbPath, username)
-  await deleteDbValue(dbPath, COPILOT_CHAT_KEY)
+  // R6 L3: COPILOT_CHAT_KEY được xóa trong cùng batch clearCopilotEntries.
+  const cleared = await clearCopilotEntries(dbPath, username)
 
   const toApply = Object.fromEntries(
     Object.entries(entries).filter(([key]) => key !== COPILOT_CHAT_KEY)
   )
-  if (Object.keys(toApply).length) {
-    const driver = await getSqliteDriver()
+  const driver = await getSqliteDriver()
+  const hasWrites = Object.keys(toApply).length > 0
+  if (hasWrites) {
     await driver.writeValues(dbPath, toApply)
+  }
+  // WAL checkpoint + dọn sidecar ngay trong write API (CODE_REVIEW N1):
+  // API exported này còn được gọi trực tiếp (test/import flow) — không được
+  // tin tưởng caller luôn gọi finalize hộ.
+  // R5 INFO 1: chỉ finalize khi flow này THỰC SỰ chạm dữ liệu (có entry ghi
+  // mới hoặc có dòng bị xóa). No-op thuần (DB sạch, entries rỗng) không còn
+  // mở connection + checkpoint vô ích.
+  if (hasWrites || cleared > 0) {
+    await driver.finalize(dbPath)
   }
 }
 
@@ -586,10 +598,11 @@ async function applyToIde(
 
     const applyEntries = filterEntriesForApply(entries, resolvedUsername)
 
+    // R6 L4: applyCopilotEntries đã TỰ finalize sau write/delete (N1 + INFO 1
+    // gate) — không còn finalize kép ở đây; no-op thuần không touch DB nữa.
     await applyCopilotEntries(ide.dbPath, applyEntries, resolvedUsername)
     await syncWorkspaceCopilotUsername(ide, resolvedUsername)
     await updateCopilotPreferredAccount(ide, resolvedUsername)
-    await finalizeDbWrite(ide.dbPath)
     await new Promise((resolve) => setTimeout(resolve, 300))
   })
 
@@ -610,7 +623,7 @@ export async function applyCopilotIdeSnapshots(
 
   let driverName: string
   try {
-    driverName = await getSqliteDriverName()
+    driverName = (await getSqliteDriver()).name
   } catch (error) {
     return {
       applied: false,

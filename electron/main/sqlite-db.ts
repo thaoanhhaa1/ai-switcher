@@ -13,7 +13,9 @@ const execFileAsync = promisify(execFile)
  * - Primary: better-sqlite3 (native, parameterized, cross-platform, busy_timeout)
  *   cần `npm run rebuild:native` để build đúng ABI Electron; chưa rebuild thì load fail.
  * - Fallback: sqlite3 CLI (không python3, không lsof) — read qua writefile()/temp file
- *   để byte-exact, write qua readfile() + CAST AS TEXT.
+ *   để byte-exact, write qua readfile() + CAST AS TEXT. Batch (writeValues/
+ *   deleteValues) bọc BEGIN/COMMIT cho atomic; busy timeout 10s qua dot-command
+ *   `.timeout` + lỗi busy được dịch sang tiếng Việt như driver native (R6 L2/INFO 4).
  *
  * Mọi thao tác serialize theo dbPath bằng promise-chain mutex (CODE_REVIEW M7).
  */
@@ -24,7 +26,9 @@ export interface SqliteDriver {
   readValue(dbPath: string, key: string): Promise<string | null>
   writeValue(dbPath: string, key: string, value: string): Promise<void>
   writeValues(dbPath: string, entries: Record<string, string>): Promise<void>
-  deleteValues(dbPath: string, keys: string[]): Promise<void>
+  /** Xóa theo keys, trả về SỐ DÒNG thực sự bị xóa (R5 INFO 1: caller cần biết
+   * có mutation thật hay không để quyết định finalize). */
+  deleteValues(dbPath: string, keys: string[]): Promise<number>
   listKeys(dbPath: string, likePattern: string): Promise<string[]>
   finalize(dbPath: string): Promise<void>
 }
@@ -134,19 +138,23 @@ function createNativeDriver(Database: DatabaseCtor): SqliteDriver {
       }
     },
     async deleteValues(dbPath, keys) {
+      let deleted = 0
       let db: DatabaseInstance | undefined
       try {
         db = open(dbPath, false)
         const del = db.prepare('DELETE FROM ItemTable WHERE key = ?')
         const run = db.transaction((rows: string[]) => {
-          for (const key of rows) del.run(key)
+          let total = 0
+          for (const key of rows) total += del.run(key).changes
+          return total
         })
-        run(keys)
+        deleted = run(keys)
       } catch (error) {
         translateBusyError(error)
       } finally {
         db?.close()
       }
+      return deleted
     },
     async listKeys(dbPath, likePattern) {
       let db: DatabaseInstance | undefined
@@ -163,16 +171,26 @@ function createNativeDriver(Database: DatabaseCtor): SqliteDriver {
       }
     },
     async finalize(dbPath) {
+      let checkpointComplete = false
       let db: DatabaseInstance | undefined
       try {
         db = open(dbPath, false)
-        db.pragma('wal_checkpoint(TRUNCATE)')
+        // R5 LOW 2: `wal_checkpoint(TRUNCATE)` KHÔNG ném lỗi khi process khác
+        // (IDE) còn đang giữ WAL — nó trả về hàng đợi kết quả với cột busy=1
+        // (đã kiểm chứng: better-sqlite3 trả [{busy:1, log:1, checkpointed:0}]).
+        // Xóa -wal/-shm khi busy=1 sẽ vứt các transaction đã commit nhưng chưa
+        // checkpoint của process ngoài → DB lệch state. Chỉ dọn khi busy=0
+        // (checkpoint hoàn tất, hoặc DB không ở WAL mode: busy=0/log=-1 và
+        // sidecar vốn không tồn tại → remove là no-op an toàn).
+        const rows = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy?: number }>
+        checkpointComplete = Number(rows[0]?.busy ?? 1) === 0
       } catch {
-        // DB có thể không ở WAL mode — bỏ qua
+        // Mở DB fail (corrupt/locked hẳn/quyền ghi) → GIỮ sidecar, không dọn
+        // nửa vời; caller sẽ thấy lỗi thật qua thao tác kế tiếp.
       } finally {
         db?.close()
       }
-      await removeWalSidecars(dbPath)
+      if (checkpointComplete) await removeWalSidecars(dbPath)
     }
   }
 }
@@ -181,11 +199,25 @@ function createNativeDriver(Database: DatabaseCtor): SqliteDriver {
 // CLI driver (fallback — chỉ cần sqlite3 CLI, KHÔNG python3)
 // ---------------------------------------------------------------------------
 
+/**
+ * SQLite busy timeout (ms) cho cả 2 driver — native qua `busy_timeout` pragma,
+ * CLI qua dot-command `.timeout` (dot-command hoạt động ở batch mode, đã kiểm
+ * chứng thực tế: `sqlite3 db ".timeout 10000" "INSERT ..."` chạy bình thường).
+ * Tránh raw "database is locked" (R6 L2) khi VS Code còn giữ DB.
+ */
+const SQLITE_BUSY_TIMEOUT_MS = 10_000
+
 async function sqliteCliQuery(dbPath: string, sql: string): Promise<string> {
-  const { stdout } = await execFileAsync('sqlite3', [dbPath, sql], {
-    encoding: 'utf8',
-    maxBuffer: 20 * 1024 * 1024
-  })
+  const { stdout } = await execFileAsync(
+    'sqlite3',
+    // Dot-command `.timeout` đặt busy timeout cho CÁC câu SQL sau nó trong
+    // cùng tiến trình sqlite3 (giống busy_timeout của driver native).
+    [dbPath, `.timeout ${SQLITE_BUSY_TIMEOUT_MS}`, sql],
+    {
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024
+    }
+  ).catch((error) => translateBusyError(error))
   return stdout
 }
 
@@ -237,16 +269,28 @@ function createCliDriver(): SqliteDriver {
           index += 1
         }
         if (statements.length) {
-          await sqliteCliQuery(dbPath, statements.join('\n'))
+          // R6 INFO 4: bọc batch trong transaction — sqlite3 CLI exit≠0 giữa
+          // dòng thì process chết trước COMMIT → SQLite implicit rollback toàn
+          // batch, không còn trạng thái "cleared-but-not-applied" nửa vời.
+          await sqliteCliQuery(dbPath, `BEGIN;\n${statements.join('\n')}\nCOMMIT;`)
         }
       })
     },
     async deleteValues(dbPath, keys) {
-      if (!keys.length) return
+      if (!keys.length) return 0
+      // R5 INFO 1: kèm SELECT changes() để biết số dòng xóa thật (finalize gate)
       const statements = keys.map(
-        (key) => `DELETE FROM ItemTable WHERE key = '${escapeSqlString(key)}';`
+        (key) =>
+          `DELETE FROM ItemTable WHERE key = '${escapeSqlString(key)}';\nSELECT changes();`
       )
-      await sqliteCliQuery(dbPath, statements.join('\n'))
+      // R6 INFO 4: bọc batch trong transaction (giống writeValues) — all-or-nothing.
+      const output = await sqliteCliQuery(dbPath, `BEGIN;\n${statements.join('\n')}\nCOMMIT;`)
+      let deleted = 0
+      for (const line of output.split('\n')) {
+        const count = Number.parseInt(line.trim(), 10)
+        if (Number.isFinite(count)) deleted += count
+      }
+      return deleted
     },
     async listKeys(dbPath, likePattern) {
       const output = await sqliteCliQuery(
@@ -256,12 +300,23 @@ function createCliDriver(): SqliteDriver {
       return output.split('\n').filter(Boolean)
     },
     async finalize(dbPath) {
+      // R5 LOW 2: giống driver native — CLI không ném lỗi khi checkpoint bị
+      // chặn, nó in kết quả "busy|log|checkpointed" với busy=1 (đã kiểm chứng
+      // exit 0, stdout "1|1|0"). Chỉ dọn sidecar khi busy=0.
+      let checkpointComplete = false
       try {
-        await sqliteCliQuery(dbPath, 'PRAGMA wal_checkpoint(TRUNCATE);')
+        const stdout = await sqliteCliQuery(dbPath, 'PRAGMA wal_checkpoint(TRUNCATE);')
+        const busy = Number.parseInt(stdout.trim().split('|')[0] ?? '', 10)
+        // R6 L1: DB đang ở WAL mode luôn in "busy|log|ckpt" nên output không
+        // parse được chỉ đến từ (a) sqlite3 quá cũ không hỗ trợ WAL-checkpoint
+        // (in rỗng — DB khi đó cũng không có sidecar để dọn) hoặc (b) format
+        // lạ. Hướng an toàn cho (b) là GIỮ — đối xứng với default của native
+        // (thiếu hàng đợi → busy=1 → giữ).
+        checkpointComplete = Number.isNaN(busy) ? false : busy === 0
       } catch {
-        // ignore
+        checkpointComplete = false
       }
-      await removeWalSidecars(dbPath)
+      if (checkpointComplete) await removeWalSidecars(dbPath)
     }
   }
 }
@@ -291,11 +346,6 @@ export async function getSqliteDriver(): Promise<SqliteDriver> {
 
   cachedDriver = createCliDriver()
   return cachedDriver
-}
-
-export async function getSqliteDriverName(): Promise<string> {
-  const driver = await getSqliteDriver()
-  return driver.name
 }
 
 async function removeWalSidecars(dbPath: string): Promise<void> {
@@ -340,6 +390,16 @@ export async function backupDatabase(dbPath: string): Promise<string> {
   const dir = dirname(dbPath)
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const backupPath = join(dir, `${BACKUP_PREFIX}${stamp}${BACKUP_SUFFIX}`)
+
+  // R8 L4: copyFile một mình KHÔNG kèm sidecar -wal/-shm — nếu phiên IDE trước
+  // chết cứng (SIGKILL/crash) để lại transaction đã commit trong WAL, bản backup
+  // mất chúng (restore lùi state). finalize = wal_checkpoint(TRUNCATE) gộp toàn
+  // bộ WAL vào main DB + dọn sidecar trước khi copy. Cả 2 driver đều nuốt lỗi
+  // checkpoint (busy/corrupt → GIỮ sidecar, backup vẫn chạy như trước — không
+  // regression; caller luôn gọi trong withDbLock nên không ai giữ WAL lúc này).
+  const driver = await getSqliteDriver()
+  await driver.finalize(dbPath)
+
   await copyFile(dbPath, backupPath)
 
   try {

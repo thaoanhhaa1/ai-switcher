@@ -1,3 +1,6 @@
+export { formatResetLabelFromSeconds, formatResetLabelFromTimestamp } from '../../src/reset-label'
+export { RESET_COUNTDOWN_PREFIX, RESET_IN_PROGRESS_LABEL } from '../../src/reset-label'
+
 export function inferWindowLabel(seconds?: number): string {
   if (!seconds || seconds <= 0) return ''
 
@@ -18,35 +21,27 @@ export function inferWindowLabel(seconds?: number): string {
   return `${days} ngày`
 }
 
+/**
+ * Định dạng tuyệt đối "dd/MM/yyyy HH:mm:ss" (giờ máy local), luôn đủ
+ * ngày + giờ + phút + GIÂY. Format tay để không phụ thuộc thứ tự field của
+ * toLocaleString('vi-VN') trên từng ICU/Node.
+ */
 export function formatResetAt(timestampSeconds?: number | null): string {
-  if (!timestampSeconds || timestampSeconds <= 0) return ''
+  // NaN/Infinity/0/âm → chuỗi rỗng (isFinite bắt luôn NaN — N2).
+  if (typeof timestampSeconds !== 'number' || !Number.isFinite(timestampSeconds) || timestampSeconds <= 0) {
+    return ''
+  }
 
-  return new Date(timestampSeconds * 1000).toLocaleString('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
+  // Số hữu hạn nhưng vượt range của Date (±8.64e15 ms) → Invalid Date — check
+  // này KHÔNG dead code nhờ guard isFinite phía trên (QUOTA_REVIEW N2).
+  const date = new Date(timestampSeconds * 1000)
+  if (Number.isNaN(date.getTime())) return ''
 
-export function formatResetLabelFromSeconds(seconds?: number): string {
-  if (!seconds || seconds <= 0) return ''
-  if (seconds < 60) return `Reset sau ${seconds}s`
-  if (seconds < 3600) return `Reset sau ${Math.ceil(seconds / 60)} phút`
-
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.ceil((seconds % 3600) / 60)
-  if (seconds < 86400) return `Reset sau ${hours}h ${minutes}p`
-
-  return `Reset sau ${Math.floor(seconds / 86400)} ngày`
-}
-
-export function formatResetLabelFromTimestamp(resetsAt?: number): string {
-  if (!resetsAt) return ''
-  const seconds = resetsAt - Math.floor(Date.now() / 1000)
-  if (seconds <= 0) return 'Đang reset...'
-  return formatResetLabelFromSeconds(seconds)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return (
+    `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  )
 }
 
 export function formatPlanType(planType?: string): string {

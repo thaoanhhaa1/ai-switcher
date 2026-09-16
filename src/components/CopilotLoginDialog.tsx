@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Account, CopilotDeviceLoginStart, CopilotLoginStatus } from '../types'
 
 interface CopilotLoginDialogProps {
@@ -7,12 +7,29 @@ interface CopilotLoginDialogProps {
   onSuccess: () => void
 }
 
+// R5 INFO 3: device flow bị abort ném 'Đã hủy đăng nhập GitHub' — user chủ
+// động hủy thì đây KHÔNG phải lỗi, dialog phải im lặng reset thay vì hiển
+// thị message đỏ. So khớp đúng message do main process quy ước
+// (copilot-device-flow.ts — throw new Error('Đã hủy đăng nhập GitHub')).
+const DEVICE_LOGIN_CANCELLED = 'Đã hủy đăng nhập GitHub'
+
 export function CopilotLoginDialog({ account, onClose, onSuccess }: CopilotLoginDialogProps) {
   const [loginStatus, setLoginStatus] = useState<CopilotLoginStatus | null>(null)
   const [importing, setImporting] = useState(false)
   const [deviceLogin, setDeviceLogin] = useState<CopilotDeviceLoginStart | null>(null)
   const [deviceWaiting, setDeviceWaiting] = useState(false)
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  // R6 L6: nút start disable NGAY khi bấm (qua deviceStarting) — trước đây
+  // deviceWaiting chỉ set sau khi start resolve, để hở cửa sổ network RTT
+  // khiến double-click tạo 2 phiên song song ở main.
+  const [deviceStarting, setDeviceStarting] = useState(false)
+  const [message, setMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null)
+  // R5 INFO 3: nhận diện "user chủ động hủy" một cách đáng tin hơn so khớp
+  // chuỗi: mỗi lượt chạy device flow có 1 số thứ tự; bấm Hủy (hoặc unmount
+  // cleanup — cũng là dạng hủy chủ động) đánh dấu seq hiện tại là đã hủy.
+  // waitFor reject với seq đã đánh dấu → im lặng, không hiển thị lỗi, và
+  // KHÔNG ghi đè state của lượt chạy mới hơn (chống race attempt cũ/trễ).
+  const deviceLoginSeqRef = useRef(0)
+  const cancelledSeqRef = useRef(0)
 
   useEffect(() => {
     window.api
@@ -20,42 +37,73 @@ export function CopilotLoginDialog({ account, onClose, onSuccess }: CopilotLogin
       .then(setLoginStatus)
       .catch(() => setLoginStatus({ loggedIn: false }))
     return () => {
-      // unmount giữa chừng flow → hủy phiên pending
+      // unmount giữa chừng flow → hủy phiên pending (tính là user chủ động hủy)
+      cancelledSeqRef.current = deviceLoginSeqRef.current
       void window.api.cancelCopilotDeviceLogin(account.id)
     }
   }, [account.id])
 
   async function handleDeviceLogin(): Promise<void> {
     setMessage(null)
+    const seq = ++deviceLoginSeqRef.current
+    setDeviceStarting(true)
     try {
       const start = await window.api.startCopilotDeviceLogin(account.id)
+      if (seq !== deviceLoginSeqRef.current) return // attempt đã bị thay thế
       setDeviceLogin(start)
       setDeviceWaiting(true)
       window.open(start.verificationUri, '_blank')
 
       const status = await window.api.waitForCopilotDeviceLogin(account.id)
+      if (seq !== deviceLoginSeqRef.current) return // attempt đã bị thay thế
       setLoginStatus(status)
       setDeviceLogin(null)
       setDeviceWaiting(false)
+      // N2: status.message chứa cảnh báo nếu KHÔNG xác minh được chủ token
+      // qua /user — hiển thị kèm để user không tưởng token đã được xác nhận.
       setMessage({
-        type: 'success',
-        text: `Đã đăng nhập GitHub${status.username ? `: @${status.username}` : ''} — quota của slot sẽ dùng token riêng này`
+        // CODE_REVIEW_QUOTA_GROUPS_R3 LOW 5: 'warning' thay vì 'error' — token
+        // đã lưu thành công, chỉ không xác minh được chủ; 'error' gây hiểu lầm
+        // login thất bại.
+        type: status.message ? 'warning' : 'success',
+        text: status.message
+          ? `Đã lưu token GitHub cho slot, nhưng: ${status.message}`
+          : `Đã đăng nhập GitHub${status.username ? `: @${status.username}` : ''} — quota của slot sẽ dùng token riêng này`
       })
       onSuccess()
     } catch (error) {
+      // R5 INFO 3: hủy do người dùng bấm nút (hoặc dialog bị đóng/unmount) →
+      // state đã được reset sẵn ở handleCancelDeviceLogin/cleanup; im lặng ở
+      // đây để không hiện "lỗi" cho hành động hợp lệ. Attempt cũ finalize
+      // muộn (seq bị thay thế) cũng phải im lặng để không ghi đè UI attempt mới.
+      const cancelledByUser =
+        cancelledSeqRef.current === seq ||
+        seq !== deviceLoginSeqRef.current ||
+        (error instanceof Error && error.message === DEVICE_LOGIN_CANCELLED)
+      if (cancelledByUser) {
+        return
+      }
       setDeviceLogin(null)
       setDeviceWaiting(false)
       setMessage({
         type: 'error',
         text: error instanceof Error ? error.message : 'Không thể đăng nhập GitHub'
       })
+    } finally {
+      // attempt đã bị thay thế → attempt mới tự reset khi start xong; attempt
+      // hiện hành → start đã xong (thành công lẫn lỗi) thì nút mở lại.
+      if (seq === deviceLoginSeqRef.current) setDeviceStarting(false)
     }
   }
 
   function handleCancelDeviceLogin(): void {
-    void window.api.cancelCopilotDeviceLogin(account.id)
+    cancelledSeqRef.current = deviceLoginSeqRef.current
     setDeviceLogin(null)
     setDeviceWaiting(false)
+    // R6 L6: mở lại nút start — nếu đang ở cửa sổ requestCode, attempt hiện hành
+    // sẽ kết thúc theo abort; nếu đã qua start thì nút vốn đã mở lại từ finally.
+    setDeviceStarting(false)
+    void window.api.cancelCopilotDeviceLogin(account.id)
   }
 
   async function handleImportLive(): Promise<void> {
@@ -148,7 +196,7 @@ export function CopilotLoginDialog({ account, onClose, onSuccess }: CopilotLogin
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={deviceWaiting}
+                    disabled={deviceStarting || deviceWaiting}
                     onClick={handleDeviceLogin}
                   >
                     Đăng nhập GitHub cho slot này
@@ -198,7 +246,7 @@ export function CopilotLoginDialog({ account, onClose, onSuccess }: CopilotLogin
               <button
                 type="button"
                 className="btn btn-ghost"
-                disabled={deviceWaiting || importing}
+                disabled={deviceStarting || deviceWaiting || importing}
                 onClick={handleDeviceLogin}
               >
                 Đăng nhập GitHub (lấy token riêng cho quota)

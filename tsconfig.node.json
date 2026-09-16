@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["electron.vite.config.ts", "electron/**/*", "src/types.ts"]
+  "include": ["electron.vite.config.ts", "electron/**/*", "src/types.ts", "src/reset-label.ts"]
 }

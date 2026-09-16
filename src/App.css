@@ -646,6 +646,10 @@
   color: #fca5a5;
 }
 
+.inline-message.warning {
+  color: #fde68a;
+}
+
 .quota-panel {
   margin-top: 12px;
   padding-top: 12px;
@@ -811,6 +815,9 @@
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.06);
+  /* N4: grid item mặc định min-width:auto → label dài không co lại được,
+     thêm min-width:0 để chain text-overflow của .quota-card-title có tác dụng. */
+  min-width: 0;
 }
 
 .quota-card.compact {
@@ -823,6 +830,24 @@
   gap: 8px;
   margin-bottom: 8px;
   font-size: 0.84rem;
+}
+
+/*
+ * N4 (CODE_REVIEW_QUOTA_GROUPS): label nhóm fallback ('Nhóm model <fingerprint>'
+ * nối bucketId) có thể rất dài — title span trong card head phải ellipsis thay
+ * vì đẩy nhãn % ra ngoài. min-width: 0 là mấu chốt cho phép flex item co lại
+ * dưới intrinsic width để overflow/text-overflow có tác dụng.
+ */
+.quota-card-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Nhãn %/trạng thái bên phải không bị bóp vỡ khi title dài. */
+.quota-card-head > .quota-muted {
+  flex-shrink: 0;
 }
 
 .quota-muted {
@@ -863,6 +888,39 @@
 
 .quota-meta {
   margin-top: 4px;
+}
+
+.quota-group-windows {
+  display: grid;
+  gap: 8px;
+}
+
+.quota-group-window {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.quota-group-window.disabled {
+  opacity: 0.6;
+}
+
+.quota-group-window-label {
+  color: #9aa0a6;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quota-group-bar {
+  margin-bottom: 0;
+}
+
+.quota-group-reset {
+  grid-column: 2 / 4;
+  margin-top: 2px;
 }
 
 .header-quota {

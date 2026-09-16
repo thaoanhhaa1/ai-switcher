@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises'
-import type { Account, AccountQuota, QuotaWindow } from '../../../src/types'
+import type { Account, AccountQuota, ModelQuota, QuotaWindow } from '../../../src/types'
 import {
   deleteStoredAntigravityAccount,
   findAccountIndexByEmail,
@@ -14,6 +14,7 @@ import {
   type AntigravityAccountsFile
 } from '../antigravity-auth-storage'
 import {
+  parseAntigravityGroupQuotas,
   parseAntigravityModelQuotas,
   type AvailableModelsResponse,
   type QuotaSummaryResponse
@@ -147,7 +148,7 @@ async function loadProjectId(accessToken: string): Promise<string> {
 async function loadQuotaSummary(
   accessToken: string,
   projectId: string
-): Promise<QuotaSummaryResponse | null> {
+): Promise<{ summary: QuotaSummaryResponse | null; authExpired: boolean }> {
   for (const base of CLOUD_CODE_BASES) {
     try {
       const response = await postJson(
@@ -155,15 +156,16 @@ async function loadQuotaSummary(
         accessToken,
         projectId ? { project: projectId } : {}
       )
-      if (response.status === 401) return null
+      // 401 = phiên Google hết hạn — trả về ngay, caller không gọi thêm mạng (QUOTA_REVIEW M1)
+      if (response.status === 401) return { summary: null, authExpired: true }
       if (!response.ok) continue
       const payload = (await response.json()) as QuotaSummaryResponse
-      if (payload?.groups?.length) return payload
+      if (payload?.groups?.length) return { summary: payload, authExpired: false }
     } catch {
       // thử host kế tiếp
     }
   }
-  return null
+  return { summary: null, authExpired: false }
 }
 
 /**
@@ -349,24 +351,44 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       projectId = entry.managedProjectId ?? entry.projectId ?? FALLBACK_PROJECT_ID
     }
 
-    const [modelsResult, summary] = await Promise.all([
-      fetchAvailableModels(accessToken, projectId),
-      loadQuotaSummary(accessToken, projectId)
-    ])
+    // Quota theo NHÓM model (Gemini / Claude&GPT) — retrieveUserQuotaSummary là nguồn chính.
+    // Chỉ gọi fetchAvailableModels khi summary lỗi/rỗng (fallback parse theo model) để tiết kiệm request.
+    // Fallback chạy TUẦN TỰ (không Promise.all): chấp nhận chậm hơn khi summary lỗi để đổi lấy
+    // 1 request ít hơn ở common case (summary OK) — chủ ý, không phải bug (QUOTA_REVIEW M-C).
+    const { summary, authExpired } = await loadQuotaSummary(accessToken, projectId)
+    const groupQuotas = summary?.groups?.length ? parseAntigravityGroupQuotas(summary) : []
+    let models: ModelQuota[]
+    let quotaLayout: 'models' | 'groups'
 
-    if (modelsResult.status === 401) {
+    if (groupQuotas.length) {
+      models = groupQuotas
+      quotaLayout = 'groups'
+    } else if (authExpired) {
+      // Phiên đã biết là hết hạn (401) — đừng gọi thêm fetchAvailableModels (QUOTA_REVIEW M1)
       return buildEmptyQuota('Phiên Google hết hạn. Hãy đăng nhập lại')
-    }
+    } else {
+      // Nhánh này có 2 nguồn vào, CẢ HAI đều hợp lệ và đều cần fallback parse theo model:
+      //  (a) summary lỗi/rỗng (loadQuotaSummary trả null) — fallback thật.
+      //  (b) "second-guess" (QUOTA_REVIEW M2): summary KHÔNG lỗi và CÓ groups, nhưng
+      //      parseAntigravityGroupQuotas trả [] (mọi bucket disabled/mồ côi). Đây là
+      //      hành vi chủ ý — KHÔNG phải bug. Đừng "tối ưu" bỏ qua models trong case (b),
+      //      vì khi đó user không thấy quota nào dù summary OK.
+      const modelsResult = await fetchAvailableModels(accessToken, projectId)
 
-    if (!modelsResult.data) {
-      return buildEmptyQuota(
-        `Không thể lấy quota Antigravity (HTTP ${modelsResult.status}): ${modelsResult.text.slice(0, 120)}`
-      )
-    }
+      if (modelsResult.status === 401) {
+        return buildEmptyQuota('Phiên Google hết hạn. Hãy đăng nhập lại')
+      }
 
-    // Quota ĐỘNG theo model: danh sách model từ fetchAvailableModels
-    // (agentModelSorts/command/image/tiered) + usage THẬT từ retrieveUserQuotaSummary.
-    const models = parseAntigravityModelQuotas(modelsResult.data, summary)
+      if (!modelsResult.data) {
+        return buildEmptyQuota(
+          `Không thể lấy quota Antigravity (HTTP ${modelsResult.status}): ${modelsResult.text.slice(0, 120)}`
+        )
+      }
+
+      // Fallback parse theo model — luôn đặt layout 'models' (QUOTA_REVIEW M2c).
+      models = parseAntigravityModelQuotas(modelsResult.data, summary)
+      quotaLayout = 'models'
+    }
 
     const emptyWindow: QuotaWindow = {
       usedCents: 0,
@@ -384,7 +406,9 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       entry.email ? `Google: ${entry.email}` : undefined,
       projectId ? `Project: ${projectId}` : undefined,
       limitedModels.length
-        ? `${limitedModels.length}/${models.length} model đã chạm giới hạn`
+        ? `${limitedModels.length}/${models.length} ${
+            quotaLayout === 'groups' ? 'nhóm model' : 'model'
+          } đã chạm giới hạn`
         : undefined
     ].filter(Boolean)
 
@@ -396,9 +420,10 @@ export async function fetchAntigravityQuota(accountId: string): Promise<AccountQ
       message: messageParts.join(' · ') || undefined,
       limitReached: limitedModels.length > 0,
       models,
+      quotaLayout,
       // hourly/weekly là field legacy (chỉ render khi models rỗng — QuotaPanel
       // ưu tiên models). Điền giá trị trung tính thay vì ép models[0..1] vào
-      // ngữ nghĩa "Quota 5 giờ/7 ngày" sai lệch (CODE_REVIEW L6).
+      // ngữ nghĩa "Quota 5 giờ/7 ngày" sai lệch (QUOTA_REVIEW L6).
       hourly: emptyWindow,
       weekly: emptyWindow,
       codeReview: null,

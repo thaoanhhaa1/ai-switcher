@@ -24,7 +24,7 @@ import {
 import { formatResetAt } from '../quota-utils'
 import { getAppDataDir } from '../paths'
 import { findAccount, loadAppData } from '../storage'
-import { pollForToken, requestDeviceCode } from '../copilot-device-flow'
+import { pollForToken, requestDeviceCode, type GithubTokenResult } from '../copilot-device-flow'
 
 const execFileAsync = promisify(execFile)
 
@@ -436,7 +436,22 @@ export async function getCopilotLoginStatus(accountId: string): Promise<CopilotL
 // GitHub device flow login (token riêng per-slot cho quota — CODE_REVIEW H1)
 // ---------------------------------------------------------------------------
 
-const pendingLogins = new Map<string, AbortController>()
+interface PendingLoginSession {
+  controller: AbortController
+  /** poll + lưu token đã kết thúc (thành công hoặc thất bại) */
+  settled: boolean
+  result?: GithubTokenResult
+  error?: string
+}
+
+const pendingLogins = new Map<string, PendingLoginSession>()
+
+/**
+ * Mirror literal convention `COPILOT_DEVICE_FLOW_CANCELLED` của
+ * copilot-device-flow.ts (dialog cũng mirror cùng literal). Không import value
+ * qua mock boundary để tránh `undefined` trong unit test.
+ */
+const CANCELLED_LOGIN_MESSAGE = 'Đã hủy đăng nhập GitHub'
 
 export interface CopilotDeviceLoginStart {
   userCode: string
@@ -445,13 +460,38 @@ export interface CopilotDeviceLoginStart {
 }
 
 export async function startCopilotDeviceLogin(accountId: string): Promise<CopilotDeviceLoginStart> {
-  if (pendingLogins.has(accountId)) {
+  const existingSession = pendingLogins.get(accountId)
+  if (existingSession && !existingSession.settled) {
     throw new Error('Đang có phiên đăng nhập GitHub cho slot này. Hãy đợi hoặc hủy trước.')
   }
+  // Cho phép ghi đè nếu lỡ còn entry đã settle trong map. Thực tế (R5 INFO 2):
+  // cả `.then` lẫn `.catch` đều set `settled = true` rồi guard-delete ngay
+  // KHÔNG có `await` nào xen giữa, nên map không bao giờ giữ entry đã settle
+  // làm giá trị hiện tại — `existingSession` tồn tại ở đây đồng nghĩa chưa
+  // settle. Giữ thêm `&& !settled` làm phòng thủ cho tương lai (vd nếu ai đó
+  // chèn `await` giữa settle và delete), và để token đã lưu không bị chặn ghi đè.
 
-  const device = await requestDeviceCode()
+  // R6 L6: register placeholder TRƯỚC await requestDeviceCode() — cửa sổ
+  // network RTT (~0.5-2s) trước đây để cancel/unmount là no-op (map còn trống,
+  // phiên vào map SAU khi cancel đã chạy) và double-click tạo 2 phiên song
+  // song. Giờ: (a) cancel trong cửa sổ này abort placeholder → requestDeviceCode
+  // nhận signal → fetch ném AbortError → catch dưới set settled, cleanup;
+  // (b) start thứ 2 trong cửa sổ này thấy placeholder chưa settle → bị chặn đúng.
   const controller = new AbortController()
-  pendingLogins.set(accountId, controller)
+  const session: PendingLoginSession = { controller, settled: false }
+  pendingLogins.set(accountId, session)
+
+  let device
+  try {
+    device = await requestDeviceCode(controller.signal)
+  } catch (error) {
+    // requestDeviceCode fail (mạng/abort vì cancel) → phiên phải settle + cleanup
+    // ngay để không chặn lần start sau (R6 L6): không có device code để poll.
+    session.settled = true
+    session.error = error instanceof Error ? error.message : String(error)
+    if (pendingLogins.get(accountId) === session) pendingLogins.delete(accountId)
+    throw error
+  }
 
   // Poll ngầm; kết quả được lấy qua waitForCopilotDeviceLogin
   void pollForToken(device.device_code, device.interval, controller.signal)
@@ -463,12 +503,33 @@ export async function startCopilotDeviceLogin(accountId: string): Promise<Copilo
       await saveStoredCopilotAccount(accountId, {
         ...existing,
         githubToken: result.accessToken,
-        githubLogin: result.login ?? existing.username
+        // N2: chỉ lưu login khi GitHub /user thực sự trả về — không "đoán"
+        // login = username của slot khi verify lỗi (metadata phải trung thực;
+        // fetchCopilotQuota vẫn so data.login thật khi hiển thị quota).
+        // CODE_REVIEW_QUOTA_GROUPS_R3 M1: giữ githubLogin cũ khi verify lỗi
+        // để không mất metadata của lần đăng nhập trước (result.login undefined
+        // khi /user gặp lỗi mạng/rate limit). fetchCopilotQuota so data.login
+        // thật nên githubLogin chỉ là metadata, giữ trung thực bằng null-threshold:
+        // undefined = chưa verify được, '' = rỗng rõ ràng, string = xác thực.
+        githubLogin: result.login ?? existing.githubLogin
       })
-      pendingLogins.delete(accountId)
+      session.settled = true
+      session.result = result
+      // M2a: cleanup phiên sau khi poll kết thúc, tránh leak khi UI không consume.
+      // R4 M1: guard identity — poll của phiên cũ có thể settle MUỘN (save/IPC
+      // chậm) sau khi waitFor timeout đã xóa map và user bắt đầu phiên mới;
+      // delete vô điều kiện sẽ xóa mất session mới trong map.
+      if (pendingLogins.get(accountId) === session) pendingLogins.delete(accountId)
     })
-    .catch(() => {
-      pendingLogins.delete(accountId)
+    .catch((error: unknown) => {
+      // N2: giữ lại lỗi thật để waitForCopilotDeviceLogin ném đúng nguyên nhân
+      // thay vì UI chỉ thấy "thất bại hoặc bị hủy"
+      session.settled = true
+      session.error = error instanceof Error ? error.message : String(error)
+      // M2a: cleanup kể cả khi lỗi, phiên đã kết thúc.
+      // R4 M1: cùng guard identity như nhánh then (race với cancel + start lại,
+      // catch của abort chạy sau khi map đã chứa session mới).
+      if (pendingLogins.get(accountId) === session) pendingLogins.delete(accountId)
     })
 
   return {
@@ -479,9 +540,14 @@ export async function startCopilotDeviceLogin(accountId: string): Promise<Copilo
 }
 
 export async function waitForCopilotDeviceLogin(accountId: string): Promise<CopilotLoginStatus> {
-  const controller = pendingLogins.get(accountId)
-  if (!controller) {
-    // Không có phiên pending — có thể đã hoàn tất từ lần gọi trước
+  const session = pendingLogins.get(accountId)
+  if (!session) {
+    // Không có phiên pending — phiên đã tự cleanup sau khi settle (M2a) hoặc
+    // chưa bắt đầu. Kiểm tra xem token đã lưu chưa.
+    // R7 L2 (ghi chú, không đổi hành vi): nếu poll settle THẤT BẠI và map
+    // đã trống, branch này đọc token của LẦN ĐĂNG NHẬP TRƯỚC — user có thể
+    // thấy "thành công" của token cũ. Hiếm (đòi UI gọi waitFor muộn sau khi
+    // settle + cleanup); giữ nguyên vì token cũ vẫn là trạng thái thật của slot.
     const status = await getCopilotLoginStatus(accountId)
     if (!status.hasOwnToken) {
       throw new Error('Không có phiên đăng nhập GitHub đang chạy. Hãy bắt đầu lại.')
@@ -489,29 +555,65 @@ export async function waitForCopilotDeviceLogin(accountId: string): Promise<Copi
     return status
   }
 
-  // Chờ tới khi entry biến mất khỏi map (hoàn tất/thất bại/hủy), tối đa 10 phút
+  // Chờ tới khi phiên settle (hoàn tất/thất bại/hủy), tối đa 10 phút
   const startedAt = Date.now()
-  while (pendingLogins.get(accountId) === controller && Date.now() - startedAt < 600_000) {
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+  while (!session.settled && Date.now() - startedAt < 600_000) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
   }
 
-  if (pendingLogins.get(accountId) === controller) {
-    controller.abort()
-    pendingLogins.delete(accountId)
-    throw new Error('Hết thời gian chờ đăng nhập GitHub. Hãy thử lại.')
+  if (!session.settled) {
+    session.controller.abort()
+    // M2b: chờ một lát cho catch handler của pollForToken kịp chạy và set settled
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    // R7 M1: từ R6 L5, poll phản ứng abort NGAY (abortableSleep + fetch signal)
+    // nên mọi lần timeout thật đều settle trong cửa sổ 500ms này với
+    // session.error = CANCELLED_LOGIN_MESSAGE — chính vụ abort của TA gây ra,
+    // không phải user hủy. Trước fix, waitFor ném session.error → dialog so
+    // khớp message coi là user-cancel → nuốt lỗi im lặng, UI kẹt trạng thái
+    // chờ vĩnh viễn và message timeout thành dead code. Giờ: settle vì abort
+    // của ta (error == message hủy) hoặc chưa settle → ném lỗi TIMEOUT. Lỗi
+    // THẬT khác (expired_token, 'Slot chưa có auth', save fail...) vẫn
+    // propagate qua nhánh session.error bên dưới (giữ semantics N2), và settle
+    // THÀNH CÔNG (session.result) rơi xuống path bình thường.
+    const settledByOurAbort = session.settled && session.error === CANCELLED_LOGIN_MESSAGE
+    if (!session.settled || settledByOurAbort) {
+      // R5 LOW 1: guard identity — trong 500ms sleep này, cancel + start phiên
+      // mới (IPC khác cùng slot) có thể đã put session KHÁC vào map; delete vô
+      // điều kiện sẽ xóa nhầm session mới (cùng họ bug R4 M1).
+      if (pendingLogins.get(accountId) === session) pendingLogins.delete(accountId)
+      throw new Error('Hết thời gian chờ đăng nhập GitHub. Hãy thử lại.')
+    }
+  }
+
+  // M2a: phiên đã tự cleanup khỏi map sau khi settle; ta vẫn còn reference session
+  // để đọc kết quả. Xóa map nếu còn sót.
+  if (pendingLogins.get(accountId) === session) pendingLogins.delete(accountId)
+
+  if (session.error) {
+    throw new Error(session.error)
   }
 
   const status = await getCopilotLoginStatus(accountId)
   if (!status.hasOwnToken) {
     throw new Error('Đăng nhập GitHub thất bại hoặc bị hủy. Hãy thử lại.')
   }
+
+  // N2: token đã lưu nhưng KHÔNG xác minh được chủ token qua /user (mạng lỗi/
+  // rate limit) → cảnh báo rõ trong status thay vì im lặng hiển thị thành công.
+  if (session.result && !session.result.loginVerified) {
+    const warning =
+      '⚠ Chưa xác minh được tài khoản GitHub của token (không gọi được /user). ' +
+      'Nếu token không đúng account, quota sẽ cảnh báo lệch khi tải.'
+    status.message = status.message ? `${status.message} · ${warning}` : warning
+  }
+
   return status
 }
 
 export async function cancelCopilotDeviceLogin(accountId: string): Promise<void> {
-  const controller = pendingLogins.get(accountId)
-  if (controller) {
-    controller.abort()
+  const session = pendingLogins.get(accountId)
+  if (session) {
+    session.controller.abort()
     pendingLogins.delete(accountId)
   }
 }
