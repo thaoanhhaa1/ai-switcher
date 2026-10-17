@@ -130,10 +130,16 @@ function getBucketWindowId(
 }
 
 /**
- * usedPercent = (1 - remaining) * 100, clamp [0,100] (QUOTA_REVIEW L2 — gom 3 bản sao).
+ * usedPercent = (1 - remaining) * 100, clamp [0,100] (QUOTA_REVIEW L2).
+ * - remaining >= 1: 0% đã dùng (100% còn lại, tài khoản mới / chưa dùng).
+ * - remaining <= 0: 100% đã dùng (0% còn lại, cạn hoàn toàn).
+ * - 0 < remaining < 1: clamp [1, 99], tránh làm tròn về 0% khi người dùng vừa gửi chat
+ *   (tiêu thụ một lượng nhỏ token) khiến quota hiển thị sai 100% và ẩn nhãn thời gian reset.
  */
 function remainingToUsedPercent(remaining: number): number {
-  return Math.min(100, Math.max(0, Math.round((1 - remaining) * 100)))
+  if (remaining >= 1) return 0
+  if (remaining <= 0) return 100
+  return Math.min(99, Math.max(1, Math.round((1 - remaining) * 100)))
 }
 
 /**
@@ -684,10 +690,22 @@ export function parseAntigravityGroupQuotas(
       windows,
     }
   })
-  return cards.sort(
-    (a, b) =>
+  return cards.sort((a, b) => {
+    // Ưu tiên hiển thị: Gemini Models luôn lên trên Claude and GPT models (đồng bộ giao diện Antigravity IDE)
+    const isGeminiA = /gemini/i.test(a.label)
+    const isGeminiB = /gemini/i.test(b.label)
+    if (isGeminiA && !isGeminiB) return -1
+    if (!isGeminiA && isGeminiB) return 1
+
+    const isClaudeA = /claude|gpt|3p/i.test(a.label)
+    const isClaudeB = /claude|gpt|3p/i.test(b.label)
+    if (isClaudeA && !isClaudeB) return -1
+    if (!isClaudeA && isClaudeB) return 1
+
+    return (
       b.usedPercent - a.usedPercent ||
       a.label.localeCompare(b.label) ||
-      a.modelId.localeCompare(b.modelId),
-  )
+      a.modelId.localeCompare(b.modelId)
+    )
+  })
 }

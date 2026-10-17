@@ -5,6 +5,7 @@ import type {
   ActiveConfigStatus,
   ActiveStatuses,
   AntigravityLoginStatus,
+  AntigravitySortOption,
   AppData,
   AppRuntimeInfo,
   ChatGptLoginStatus,
@@ -13,6 +14,7 @@ import type {
   ProviderId,
   ProviderInfo
 } from './types'
+import { sortAntigravityAccounts } from './antigravity-sort'
 import { AccountDialog } from './components/AccountDialog'
 import { AntigravityAccountDialog } from './components/AntigravityAccountDialog'
 import { AntigravityLoginDialog } from './components/AntigravityLoginDialog'
@@ -86,7 +88,7 @@ export default function App() {
   const [copilotLogins, setCopilotLogins] = useState<Record<string, CopilotLoginStatus>>({})
   const [loginAccount, setLoginAccount] = useState<Account | null>(null)
   const [expandedAccounts, setExpandedAccounts] = useState<Set<string>>(new Set())
-  const [usageLogVisible, setUsageLogVisible] = useState(true)
+  const [usageLogVisible, setUsageLogVisible] = useState(false)
   const [runtimeInfo, setRuntimeInfo] = useState<AppRuntimeInfo | null>(null)
 
   const selectedProvider = useMemo(
@@ -98,6 +100,35 @@ export default function App() {
     () => data?.accounts.filter((account) => account.provider === selectedProviderId) ?? [],
     [data?.accounts, selectedProviderId]
   )
+
+  const [antigravitySort, setAntigravitySort] = useState<AntigravitySortOption>(() => {
+    const saved = localStorage.getItem('ai-switcher:antigravity-sort')
+    if (
+      saved === 'gemini-desc' ||
+      saved === 'gemini-asc' ||
+      saved === 'claude-desc' ||
+      saved === 'claude-asc'
+    ) {
+      return saved
+    }
+    return 'default'
+  })
+
+  function handleAntigravitySortChange(option: AntigravitySortOption) {
+    setAntigravitySort(option)
+    try {
+      localStorage.setItem('ai-switcher:antigravity-sort', option)
+    } catch {
+      // ignore
+    }
+  }
+
+  const displayedAccounts = useMemo(() => {
+    if (selectedProviderId === 'antigravity') {
+      return sortAntigravityAccounts(providerAccounts, quotas, antigravitySort)
+    }
+    return providerAccounts
+  }, [selectedProviderId, providerAccounts, quotas, antigravitySort])
 
   const providerUsageLog = useMemo(
     () => data?.usageLog.filter((event) => event.provider === selectedProviderId) ?? [],
@@ -173,6 +204,24 @@ export default function App() {
       setError(err instanceof Error ? err.message : 'Không thể tải quota')
     } finally {
       setQuotaLoading(false)
+    }
+  }
+
+  const [refreshingQuotaIds, setRefreshingQuotaIds] = useState<Set<string>>(new Set())
+
+  async function refreshAccountQuota(account: Account): Promise<void> {
+    setRefreshingQuotaIds((prev) => new Set(prev).add(account.id))
+    try {
+      const nextQuota = await window.api.getAccountQuota(account.provider, account.id)
+      setQuotas((prev) => ({ ...prev, [account.id]: nextQuota }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Không thể tải quota tài khoản ${account.name}`)
+    } finally {
+      setRefreshingQuotaIds((prev) => {
+        const next = new Set(prev)
+        next.delete(account.id)
+        return next
+      })
     }
   }
 
@@ -423,11 +472,14 @@ export default function App() {
 
   function renderQuotaPanel(account: Account, compact = false): JSX.Element {
     const loginInfo = getLoginInfo(account)
+    const isRefreshing = refreshingQuotaIds.has(account.id)
 
     return (
       <QuotaPanel
         quota={quotas[account.id] ?? null}
-        loading={quotaLoading && !quotas[account.id]}
+        loading={(quotaLoading && !quotas[account.id]) || (isRefreshing && !quotas[account.id])}
+        refreshing={isRefreshing}
+        onRefresh={() => refreshAccountQuota(account)}
         loginStatus={loginInfo.loggedIn ? { loggedIn: true, email: loginInfo.email } : null}
         loginPrompt={
           account.provider === 'antigravity'
@@ -439,6 +491,17 @@ export default function App() {
               : 'Đăng nhập FreeModel để xem quota'
         }
         onLogin={() => setLoginAccount(account)}
+        onTestChat={
+          account.provider === 'antigravity'
+            ? async (family) => {
+                const res = await window.api.testAntigravityChat(account.id, family)
+                if (res?.success) {
+                  await refreshAccountQuota(account)
+                }
+                return res
+              }
+            : undefined
+        }
         compact={compact}
       />
     )
@@ -616,6 +679,13 @@ export default function App() {
                     <div className="panel-header-actions">
                       <button
                         className="btn btn-ghost"
+                        disabled={refreshingQuotaIds.has(providerActiveAccount.id)}
+                        onClick={() => refreshAccountQuota(providerActiveAccount)}
+                      >
+                        {refreshingQuotaIds.has(providerActiveAccount.id) ? 'Đang tải...' : 'Làm mới quota'}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
                         onClick={() => setLoginAccount(providerActiveAccount)}
                       >
                         {providerActiveLoginInfo?.label}
@@ -626,6 +696,8 @@ export default function App() {
                     <QuotaPanel
                       quota={providerActiveQuota ?? null}
                       loading={quotaLoading && !providerActiveQuota}
+                      refreshing={refreshingQuotaIds.has(providerActiveAccount.id)}
+                      onRefresh={() => refreshAccountQuota(providerActiveAccount)}
                       loginStatus={
                         providerActiveLoginInfo?.loggedIn
                           ? { loggedIn: true, email: providerActiveLoginInfo.email }
@@ -641,6 +713,17 @@ export default function App() {
                             : 'Đăng nhập FreeModel để xem quota'
                       }
                       onLogin={() => setLoginAccount(providerActiveAccount)}
+                      onTestChat={
+                        selectedProviderId === 'antigravity'
+                          ? async (family) => {
+                              const res = await window.api.testAntigravityChat(providerActiveAccount.id, family)
+                              if (res?.success) {
+                                await refreshAccountQuota(providerActiveAccount)
+                              }
+                              return res
+                            }
+                          : undefined
+                      }
                     />
                   </div>
                 </div>
@@ -651,18 +734,37 @@ export default function App() {
               <section className="panel">
                 <div className="panel-header">
                   <h3>
-                    Tài khoản {providerLabel(selectedProviderId)} ({providerAccounts.length})
+                    Tài khoản {providerLabel(selectedProviderId)} ({displayedAccounts.length})
                   </h3>
+                  {selectedProviderId === 'antigravity' && (
+                    <div className="panel-header-actions">
+                      <label htmlFor="ag-sort-select" className="sort-label">
+                        Sắp xếp:
+                      </label>
+                      <select
+                        id="ag-sort-select"
+                        className="sort-select"
+                        value={antigravitySort}
+                        onChange={(e) => handleAntigravitySortChange(e.target.value as AntigravitySortOption)}
+                      >
+                        <option value="default">Default (sort theo hiện tại)</option>
+                        <option value="gemini-desc">Thời gian reset Quota của Gemini giảm dần</option>
+                        <option value="gemini-asc">Thời gian reset Quota của Gemini tăng dần</option>
+                        <option value="claude-desc">Thời gian reset Quota Claude and GPT giảm dần</option>
+                        <option value="claude-asc">Thời gian reset Quota Claude and GPT tăng dần</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
                 <div className="panel-body">
-                  {!providerAccounts.length ? (
+                  {!displayedAccounts.length ? (
                     <div className="empty-state">
                       Chưa có tài khoản {providerLabel(selectedProviderId)}. Bấm &quot;Thêm tài
                       khoản&quot; để bắt đầu.
                     </div>
                   ) : (
                     <div className="account-list">
-                      {providerAccounts.map((account) => {
+                      {displayedAccounts.map((account) => {
                         const isActive = statuses?.[account.provider]?.accountId === account.id
                         const loginInfo = getLoginInfo(account)
                         const isExpanded = expandedAccounts.has(account.id)
@@ -730,6 +832,14 @@ export default function App() {
                                 onClick={() => setLoginAccount(account)}
                               >
                                 Login
+                              </button>
+                              <button
+                                className="btn btn-ghost"
+                                disabled={refreshingQuotaIds.has(account.id)}
+                                onClick={() => refreshAccountQuota(account)}
+                                title={`Làm mới quota tài khoản ${account.name}`}
+                              >
+                                {refreshingQuotaIds.has(account.id) ? 'Đang tải...' : 'Làm mới quota'}
                               </button>
                               <button
                                 className="btn btn-primary"

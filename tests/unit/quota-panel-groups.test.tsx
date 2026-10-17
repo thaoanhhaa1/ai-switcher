@@ -152,14 +152,14 @@ describe('QuotaPanel — layout groups (L3)', () => {
 
     // Card head: tên nhóm + % tổng.
     const heads = [...container.querySelectorAll('.quota-card-head')].map((el) => el.textContent)
-    expect(heads).toContain('Quota Claude and GPT models70% đã dùng')
-    expect(heads).toContain('Quota Gemini Models10% đã dùng')
+    expect(heads).toContain('Quota Claude and GPT models30% còn lại')
+    expect(heads).toContain('Quota Gemini Models90% còn lại')
 
-    // Window row hiển thị label + % từng cửa sổ.
+    // Window row hiển thị label + % từng cửa sổ (Gemini Models đứng trước Claude and GPT models).
     const rowLabels = [...container.querySelectorAll('.quota-group-window-label')].map((el) => el.textContent)
-    expect(rowLabels).toEqual(['5 giờ', '7 ngày', '7 ngày', '5 giờ'])
-    expect(container.textContent).toContain('20% đã dùng')
-    expect(container.textContent).toContain('10% đã dùng')
+    expect(rowLabels).toEqual(['7 ngày', '5 giờ', '5 giờ', '7 ngày'])
+    expect(container.textContent).toContain('80% còn lại')
+    expect(container.textContent).toContain('90% còn lại')
 
     // Không render tab switching trên đường groups.
     expect(container.querySelector('[role="tablist"]')).toBeNull()
@@ -234,10 +234,10 @@ describe('QuotaPanel — layout groups (L3)', () => {
     render(<QuotaPanel quota={makeQuota([makeClaudeGroup()], 'groups', 'percent')} />)
     const bars = screen.getAllByRole('progressbar')
     // L2 (CODE_REVIEW_QUOTA_GROUPS): 1 row/windowLabel → KHÔNG có `#N` trong aria-label.
-    const weekly = bars.find((el) => el.getAttribute('aria-label') === 'Quota 7 ngày — mức đã dùng')
+    const weekly = bars.find((el) => el.getAttribute('aria-label') === 'Quota 7 ngày — mức còn lại')
     expect(weekly).toBeDefined()
-    expect(weekly?.getAttribute('aria-valuenow')).toBe('70')
-    expect(weekly?.getAttribute('aria-valuetext')).toBe('70% đã dùng')
+    expect(weekly?.getAttribute('aria-valuenow')).toBe('30')
+    expect(weekly?.getAttribute('aria-valuetext')).toBe('30% còn lại')
     expect(weekly?.getAttribute('aria-valuemax')).toBe('100')
   })
 
@@ -254,9 +254,9 @@ describe('QuotaPanel — layout groups (L3)', () => {
     )
     const labels = [...container.querySelectorAll('.quota-group-bar')].map((el) => el.getAttribute('aria-label'))
     expect(labels).toEqual([
-      'Quota 5 giờ #1 — mức đã dùng',
-      'Quota 5 giờ #2 — mức đã dùng',
-      'Quota 7 ngày — mức đã dùng'
+      'Quota 5 giờ #1 — mức còn lại',
+      'Quota 5 giờ #2 — mức còn lại',
+      'Quota 7 ngày — mức còn lại'
     ])
   })
 
@@ -271,9 +271,9 @@ describe('QuotaPanel — layout groups (L3)', () => {
     const { container } = render(<QuotaPanel quota={makeQuota([l1Group], 'groups', 'percent')} />)
     const labels = [...container.querySelectorAll('.quota-group-bar')].map((el) => el.getAttribute('aria-label'))
     expect(labels).toEqual([
-      'Quota 5 giờ #1 — mức đã dùng',
-      'Quota 7 ngày — mức đã dùng',
-      'Quota 5 giờ #2 — mức đã dùng'
+      'Quota 5 giờ #1 — mức còn lại',
+      'Quota 7 ngày — mức còn lại',
+      'Quota 5 giờ #2 — mức còn lại'
     ])
   })
 
@@ -296,7 +296,7 @@ describe('QuotaPanel — layout groups (L3)', () => {
     const { container } = render(<QuotaPanel quota={makeQuota([mixedGroup], 'groups', 'percent')} />)
     const labels = [...container.querySelectorAll('.quota-group-bar')].map((el) => el.getAttribute('aria-label'))
     // Row enabled duy nhất → KHÔNG có `#N`.
-    expect(labels).toEqual(['Quota 5 giờ — mức đã dùng'])
+    expect(labels).toEqual(['Quota 5 giờ — mức còn lại'])
     expect(labels[0]).not.toContain('#')
 
     // 2 row enabled + 1 disabled cùng label → #1/#2 chỉ đếm row enabled.
@@ -315,8 +315,8 @@ describe('QuotaPanel — layout groups (L3)', () => {
     const { container: c3 } = render(<QuotaPanel quota={makeQuota([threeGroup], 'groups', 'percent')} />)
     const labels3 = [...c3.querySelectorAll('.quota-group-bar')].map((el) => el.getAttribute('aria-label'))
     expect(labels3).toEqual([
-      'Quota 5 giờ #1 — mức đã dùng',
-      'Quota 5 giờ #2 — mức đã dùng'
+      'Quota 5 giờ #1 — mức còn lại',
+      'Quota 5 giờ #2 — mức còn lại'
     ])
   })
 
@@ -349,7 +349,7 @@ describe('QuotaPanel — layout groups (L3)', () => {
       [win({ windowId: '5h', windowLabel: '5 giờ', windowSeconds: 18000, usedPercent: 100, remainingPercent: 0 })]
     )
     const { container } = render(<QuotaPanel quota={makeQuota([exhausted], 'groups', 'percent')} />)
-    expect(container.querySelector('.quota-group-window .quota-danger-text')?.textContent).toBe('100% đã dùng')
+    expect(container.querySelector('.quota-group-window .quota-danger-text')?.textContent).toBe('0% còn lại')
   })
 
   it('compact groups: slice(0, 2) + note "+N nhóm khác" (khác slice models (0,3))', () => {
@@ -372,4 +372,102 @@ describe('QuotaPanel — layout groups (L3)', () => {
     expect(container.querySelectorAll('.quota-card.compact')).toHaveLength(3)
     expect(container.querySelector('.quota-note')?.textContent).toBe('+1 model khác (mở chi tiết để xem quota)')
   })
+
+  it('renders refresh button when onRefresh is provided, and handles refreshing disabled state', () => {
+    const onRefresh = vi.fn()
+    const { container, rerender } = render(
+      <QuotaPanel quota={makeQuota([makeClaudeGroup()], 'groups', 'percent')} onRefresh={onRefresh} />
+    )
+    const btn = container.querySelector('.quota-refresh-btn') as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    expect(btn.textContent).toBe('Làm mới')
+    btn.click()
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+
+    // When refreshing=true, button is disabled and text is 'Đang tải...'
+    rerender(
+      <QuotaPanel quota={makeQuota([makeClaudeGroup()], 'groups', 'percent')} onRefresh={onRefresh} refreshing />
+    )
+    const disabledBtn = container.querySelector('.quota-refresh-btn') as HTMLButtonElement
+    expect(disabledBtn.disabled).toBe(true)
+    expect(disabledBtn.textContent).toBe('Đang tải...')
+  })
+
+  it('renders test chat send button on Claude and Gemini groups when onTestChat is provided', async () => {
+    let resolveChat!: (res: { success: boolean; message?: string }) => void
+    const onTestChat = vi.fn(
+      () =>
+        new Promise<{ success: boolean; message?: string }>((resolve) => {
+          resolveChat = resolve
+        })
+    )
+
+    const onRefresh = vi.fn()
+    const claude = makeClaudeGroup()
+    const gemini = group('gemini-group', 'Gemini Models', 10, [win({ windowId: '5h', windowLabel: '5 giờ' })])
+    const { container } = render(
+      <QuotaPanel quota={makeQuota([claude, gemini], 'groups', 'percent')} onTestChat={onTestChat} onRefresh={onRefresh} />
+    )
+
+    const buttons = container.querySelectorAll('.quota-test-send-btn') as NodeListOf<HTMLButtonElement>
+    expect(buttons).toHaveLength(2)
+
+    const claudeBtn = container.querySelector('button[aria-label*="Claude"]') as HTMLButtonElement
+    const geminiBtn = container.querySelector('button[aria-label*="Gemini"]') as HTMLButtonElement
+    expect(claudeBtn).not.toBeNull()
+    expect(geminiBtn).not.toBeNull()
+
+    expect(claudeBtn.title).toContain('Say ok')
+    expect(claudeBtn.classList.contains('idle')).toBe(true)
+
+    // Click Claude button
+    await act(async () => {
+      claudeBtn.click()
+    })
+
+    // Now in loading state
+    expect(onTestChat).toHaveBeenCalledWith('claude')
+    expect(claudeBtn.disabled).toBe(true)
+    expect(claudeBtn.classList.contains('loading')).toBe(true)
+    expect(claudeBtn.querySelector('.quota-test-spinner')).not.toBeNull()
+
+    // Resolve with success
+    await act(async () => {
+      resolveChat({ success: true, message: 'OK' })
+    })
+
+    // Now in success state (green)
+    expect(claudeBtn.disabled).toBe(false)
+    expect(claudeBtn.classList.contains('success')).toBe(true)
+    expect(claudeBtn.classList.contains('loading')).toBe(false)
+    expect(claudeBtn.title).toContain('Thành công')
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+
+    // Test Gemini button
+    let resolveGemini!: (res: { success: boolean; message?: string }) => void
+    onTestChat.mockImplementationOnce(
+      () =>
+        new Promise<{ success: boolean; message?: string }>((resolve) => {
+          resolveGemini = resolve
+        })
+    )
+    await act(async () => {
+      geminiBtn.click()
+    })
+
+    expect(onTestChat).toHaveBeenCalledWith('gemini')
+    expect(geminiBtn.disabled).toBe(true)
+    expect(geminiBtn.classList.contains('loading')).toBe(true)
+
+    // Resolve with failure
+    await act(async () => {
+      resolveGemini({ success: false, message: 'Resource exhausted' })
+    })
+
+    // Now in error state (red)
+    expect(geminiBtn.disabled).toBe(false)
+    expect(geminiBtn.classList.contains('error')).toBe(true)
+    expect(geminiBtn.title).toContain('Thất bại: Resource exhausted')
+  })
 })
+

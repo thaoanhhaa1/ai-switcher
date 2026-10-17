@@ -33,6 +33,8 @@ const api: Api = {
     ipcRenderer.invoke('antigravity:importFile', accountId, filePath),
   logoutAntigravity: (accountId) => ipcRenderer.invoke('antigravity:logout', accountId),
   pickAntigravityAccountsFile: () => ipcRenderer.invoke('antigravity:pickAccountsFile'),
+  testAntigravityChat: (accountId, family) =>
+    ipcRenderer.invoke('antigravity:testChat', accountId, family),
   getCopilotLoginStatus: (accountId) => ipcRenderer.invoke('copilot:loginStatus', accountId),
   importCopilotFromLive: (accountId) => ipcRenderer.invoke('copilot:importLive', accountId),
   importCopilotFromFile: (accountId, filePath) =>

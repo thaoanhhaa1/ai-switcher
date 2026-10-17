@@ -183,7 +183,7 @@ describe('parseAntigravityGroupQuotas', () => {
   it('2 nhóm → 2 items, label = displayName, modelId ổn định theo label (không phải index)', () => {
     const groups = parseAntigravityGroupQuotas(summary)
     expect(groups).toHaveLength(2)
-    expect(groups.map((g) => g.label)).toEqual(['Claude and GPT models', 'Gemini Models'])
+    expect(groups.map((g) => g.label)).toEqual(['Gemini Models', 'Claude and GPT models'])
     // L3: modelId derive từ hash label → ổn định qua refresh dù thứ tự API đổi.
     const ids = groups.map((g) => g.modelId)
     expect(ids[0]).toMatch(/^group-\d+$/)
@@ -208,7 +208,7 @@ describe('parseAntigravityGroupQuotas', () => {
     // (JS `%` giữ dấu dividend). Bản cũ chỉ dương nhờ Math.abs ở bước cuối —
     // abs-collision x vs −x vẫn tồn tại. Bản fix chuẩn modulo ((x % n) + n) % n
     // đưa hash về [0, 2**31): -1125754326 + 2**31 = 1021729322 ≠ 1125754326.
-    const [claude] = parseAntigravityGroupQuotas(summary)
+    const [, claude] = parseAntigravityGroupQuotas(summary)
     expect(claude.label).toBe('Claude and GPT models')
     expect(claude.modelId).toBe('group-1021729322')
     expect(claude.modelId).toMatch(/^group-\d+$/)
@@ -240,22 +240,22 @@ describe('parseAntigravityGroupQuotas', () => {
   })
 
   it('windows đúng thứ tự 5h → weekly (sort windowSeconds), usedPercent = (1 - remaining) * 100', () => {
-    const [claude] = parseAntigravityGroupQuotas(summary)
+    const [, claude] = parseAntigravityGroupQuotas(summary)
     expect(claude.windows?.map((w) => w.windowId)).toEqual(['5h', 'weekly'])
     expect(claude.windows?.map((w) => w.usedPercent)).toEqual([20, 70])
   })
 
   it('% tổng của thẻ nhóm = bucket cạn nhất (min remaining, bỏ bucket disabled)', () => {
     const groups = parseAntigravityGroupQuotas(summary)
-    // Claude: min(0.8, 0.3) = 0.3 → 70% đã dùng
-    expect(groups[0].usedPercent).toBe(70)
-    expect(groups[0].remainingPercent).toBe(30)
     // Gemini: chỉ weekly 0.9 (5h disabled) → 10% đã dùng
-    expect(groups[1].usedPercent).toBe(10)
+    expect(groups[0].usedPercent).toBe(10)
+    expect(groups[0].remainingPercent).toBe(90)
+    // Claude: min(0.8, 0.3) = 0.3 → 70% đã dùng
+    expect(groups[1].usedPercent).toBe(70)
   })
 
   it('bucket disabled → disabled: true, vẫn nằm trong windows', () => {
-    const [, gemini] = parseAntigravityGroupQuotas(summary)
+    const [gemini] = parseAntigravityGroupQuotas(summary)
     const fiveHour = gemini.windows?.find((w) => w.windowId === '5h')
     expect(fiveHour?.disabled).toBe(true)
   })
@@ -586,22 +586,22 @@ describe('parseAntigravityGroupQuotas', () => {
     expect(second[0].windows?.map((w) => w.usedPercent)).toEqual(first[0].windows?.map((w) => w.usedPercent))
   })
 
-  it('L3: sort nhóm theo usedPercent GIẢM DẦN bất kể thứ tự API (compact không ẩn nhóm cạn nhất)', () => {
+  it('L3: ưu tiên Gemini Models trước, rồi đến Claude and GPT models, sau đó đến các nhóm khác (deterministic bất kể thứ tự API)', () => {
     const l3 = {
       groups: [
-        // Thứ tự API: ít dùng đứng TRƯỚC — parse phải đảo lại.
-        { displayName: 'Gemini Models', buckets: [{ bucketId: 'l1', window: '5h', remainingFraction: 0.95 }] },
+        // Thứ tự API bất kỳ — parse phải sắp xếp Gemini lên đầu, Claude thứ hai
         { displayName: 'Claude and GPT models', buckets: [{ bucketId: 'l2', window: '5h', remainingFraction: 0.1 }] },
-        { displayName: 'Mid Group', buckets: [{ bucketId: 'l3', window: '5h', remainingFraction: 0.5 }] }
+        { displayName: 'Mid Group', buckets: [{ bucketId: 'l3', window: '5h', remainingFraction: 0.5 }] },
+        { displayName: 'Gemini Models', buckets: [{ bucketId: 'l1', window: '5h', remainingFraction: 0.95 }] }
       ]
     }
     const groups = parseAntigravityGroupQuotas(l3)
-    expect(groups.map((g) => g.usedPercent)).toEqual([90, 50, 5])
     expect(groups.map((g) => g.label)).toEqual([
+      'Gemini Models',
       'Claude and GPT models',
-      'Mid Group',
-      'Gemini Models'
+      'Mid Group'
     ])
+    expect(groups.map((g) => g.usedPercent)).toEqual([5, 90, 50])
     // Deterministic: đảo thứ tự API → cùng output (tie-breaker theo nội dung).
     const reversed = parseAntigravityGroupQuotas({ groups: [...l3.groups].reverse() })
     expect(reversed.map((g) => g.modelId)).toEqual(groups.map((g) => g.modelId))
@@ -707,4 +707,28 @@ describe('buildModelQuota (có nhóm — QUOTA_REVIEW N3)', () => {
     expect(m.usedPercent).toBe(100)
     expect(m.windows?.[0]?.usedPercent).toBe(100)
   })
+
+  it('tiêu thụ một lượng nhỏ token (0 < remaining < 1) -> usedPercent ít nhất 1%, remainingPercent tối đa 99% (không bị làm tròn về 100% còn lại)', () => {
+    const tinyUsageGroup = {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            // Chat thử nghiệm tiêu thụ ~0.04% quota -> remainingFraction 0.99958
+            { bucketId: 'g1', window: '5h', remainingFraction: 0.99958, resetTime: future(3) },
+            { bucketId: 'g2', window: 'weekly', remainingFraction: 0.99988, resetTime: future(100) }
+          ]
+        }
+      ]
+    }
+    const [group] = parseAntigravityGroupQuotas(tinyUsageGroup)
+    expect(group.usedPercent).toBe(1)
+    expect(group.remainingPercent).toBe(99)
+    const windows = Object.fromEntries(group.windows!.map((w) => [w.windowId, w]))
+    expect(windows['5h'].usedPercent).toBe(1)
+    expect(windows['5h'].remainingPercent).toBe(99)
+    expect(windows.weekly.usedPercent).toBe(1)
+    expect(windows.weekly.remainingPercent).toBe(99)
+  })
 })
+

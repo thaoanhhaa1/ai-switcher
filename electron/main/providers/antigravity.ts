@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises'
-import type { Account, AccountQuota, ModelQuota, QuotaWindow } from '../../../src/types'
+import type { Account, AccountQuota, AntigravityTestChatResult, ModelQuota, QuotaWindow } from '../../../src/types'
 import {
   deleteStoredAntigravityAccount,
   findAccountIndexByEmail,
@@ -17,6 +17,7 @@ import {
   parseAntigravityGroupQuotas,
   parseAntigravityModelQuotas,
   type AvailableModelsResponse,
+  type QuotaSummaryGroup,
   type QuotaSummaryResponse
 } from '../antigravity-quota'
 import { applyAntigravityIdeAccount } from '../antigravity-ide'
@@ -27,14 +28,27 @@ import { loadAppData } from '../storage'
 
 export const ANTIGRAVITY_DOCS = 'https://github.com/NoeFabris/opencode-antigravity-auth'
 
-const CLOUD_CODE_BASE = 'https://cloudcode-pa.googleapis.com'
-// Antigravity IDE route qua host daily trước — model list + quota trên daily mới nhất
-// (vd gemini-3.8-flash-tiered chỉ xuất hiện trên daily). Prod là fallback.
+const DAILY_CLOUD_CODE_BASE = 'https://daily-cloudcode-pa.googleapis.com'
+const PROD_CLOUD_CODE_BASE = 'https://cloudcode-pa.googleapis.com'
+// daily-cloudcode-pa là endpoint mà Antigravity IDE thực tế kết nối (--cloud_code_endpoint)
+// và cung cấp hạn mức quota thời gian thực đồng bộ cho cả Gemini Models và Claude and GPT models.
+// cloudcode-pa (production) là host dự phòng khi daily gặp sự cố mạng hoặc thiếu nhóm.
 const CLOUD_CODE_BASES = [
-  'https://daily-cloudcode-pa.googleapis.com',
-  CLOUD_CODE_BASE
+  DAILY_CLOUD_CODE_BASE,
+  PROD_CLOUD_CODE_BASE
 ] as const
-const USER_AGENT = 'antigravity/windows/amd64'
+const CLOUD_CODE_BASE = DAILY_CLOUD_CODE_BASE
+
+function getAntigravityHeaders(): Record<string, string> {
+  const platform = process.platform === 'win32' ? 'WINDOWS' : process.platform === 'darwin' ? 'MACOS' : 'LINUX'
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+  const osStr = process.platform === 'win32' ? 'windows/amd64' : `${process.platform}/${arch}`
+  return {
+    'User-Agent': `antigravity/2.24.0 ${osStr}`,
+    'X-Goog-Api-Client': 'google-cloud-sdk vscode/1.96.0',
+    'Client-Metadata': JSON.stringify({ ideType: 'ANTIGRAVITY', platform, pluginType: 'GEMINI' })
+  }
+}
 const FALLBACK_PROJECT_ID = 'bamboo-precept-lgxtn'
 
 export const DEFAULT_ANTIGRAVITY_SETTINGS = {
@@ -77,7 +91,7 @@ async function postJson(url: string, token: string, body: unknown, extraHeaders:
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      'User-Agent': USER_AGENT,
+      ...getAntigravityHeaders(),
       ...extraHeaders
     },
     body: JSON.stringify(body)
@@ -120,22 +134,26 @@ async function refreshGoogleToken(refreshToken: string): Promise<RefreshedGoogle
 }
 
 async function loadProjectId(accessToken: string): Promise<string> {
-  const response = await postJson(`${CLOUD_CODE_BASE}/v1internal:loadCodeAssist`, accessToken, {
-    metadata: { ideType: 'ANTIGRAVITY' }
-  })
-  if (!response.ok) {
-    return ''
-  }
+  for (const base of CLOUD_CODE_BASES) {
+    try {
+      const response = await postJson(`${base}/v1internal:loadCodeAssist`, accessToken, {
+        metadata: { ideType: 'ANTIGRAVITY' }
+      })
+      if (!response.ok) continue
 
-  const payload = (await response.json()) as {
-    cloudaicompanionProject?: string | { id?: string }
-  }
+      const payload = (await response.json()) as {
+        cloudaicompanionProject?: string | { id?: string }
+      }
 
-  if (typeof payload.cloudaicompanionProject === 'string') {
-    return payload.cloudaicompanionProject
-  }
-  if (payload.cloudaicompanionProject && typeof payload.cloudaicompanionProject.id === 'string') {
-    return payload.cloudaicompanionProject.id
+      if (typeof payload.cloudaicompanionProject === 'string') {
+        return payload.cloudaicompanionProject
+      }
+      if (payload.cloudaicompanionProject && typeof payload.cloudaicompanionProject.id === 'string') {
+        return payload.cloudaicompanionProject.id
+      }
+    } catch {
+      // try next host
+    }
   }
   return ''
 }
@@ -149,6 +167,8 @@ async function loadQuotaSummary(
   accessToken: string,
   projectId: string
 ): Promise<{ summary: QuotaSummaryResponse | null; authExpired: boolean }> {
+  const combinedGroups: QuotaSummaryGroup[] = []
+
   for (const base of CLOUD_CODE_BASES) {
     try {
       const response = await postJson(
@@ -160,10 +180,28 @@ async function loadQuotaSummary(
       if (response.status === 401) return { summary: null, authExpired: true }
       if (!response.ok) continue
       const payload = (await response.json()) as QuotaSummaryResponse
-      if (payload?.groups?.length) return { summary: payload, authExpired: false }
+      if (payload?.groups?.length) {
+        for (const group of payload.groups) {
+          if (!group) continue
+          const name = (group.displayName ?? '').trim().toLowerCase()
+          if (!combinedGroups.some((g) => (g.displayName ?? '').trim().toLowerCase() === name)) {
+            combinedGroups.push(group)
+          }
+        }
+        // Dừng sớm nếu đã có cả 2 nhóm chính (Gemini và Claude/GPT)
+        const hasGemini = combinedGroups.some((g) => /gemini/i.test(g.displayName ?? ''))
+        const hasClaude = combinedGroups.some((g) => /claude|gpt|3p/i.test(g.displayName ?? ''))
+        if (hasGemini && hasClaude) {
+          break
+        }
+      }
     } catch {
       // thử host kế tiếp
     }
+  }
+
+  if (combinedGroups.length) {
+    return { summary: { groups: combinedGroups }, authExpired: false }
   }
   return { summary: null, authExpired: false }
 }
@@ -442,3 +480,130 @@ export function getAntigravityConfigDirPath(): string {
 export function getAntigravityLiveAccountsPath(): string {
   return getAntigravityAccountsPath()
 }
+
+const GEMINI_TEST_MODELS = [
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-tiered',
+  'gemini-3-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash'
+]
+
+const CLAUDE_TEST_MODELS = [
+  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
+  'claude-sonnet-4-5',
+  'gpt-oss-120b-medium'
+]
+
+export async function testAntigravityChat(
+  accountId: string,
+  family: 'gemini' | 'claude'
+): Promise<AntigravityTestChatResult> {
+  const stored = await loadStoredAntigravityAccount(accountId)
+  const entry = stored ? normalizeAntigravityEntry(stored) : null
+  if (!isValidAntigravityEntry(entry)) {
+    return {
+      success: false,
+      message: 'Chưa có thông tin đăng nhập tài khoản Antigravity'
+    }
+  }
+
+  try {
+    let accessToken: string
+    try {
+      const refreshed = await refreshGoogleToken(entry.refreshToken)
+      accessToken = refreshed.accessToken
+    } catch (tokenErr) {
+      return {
+        success: false,
+        message: tokenErr instanceof Error ? tokenErr.message : 'Lỗi làm mới token Google'
+      }
+    }
+
+    let projectId = await loadProjectId(accessToken)
+    if (!projectId) {
+      projectId = entry.managedProjectId ?? entry.projectId ?? FALLBACK_PROJECT_ID
+    }
+
+    const candidateModels = family === 'gemini' ? GEMINI_TEST_MODELS : CLAUDE_TEST_MODELS
+    let lastStatus = 0
+    let lastErrorMsg = ''
+
+    // daily-cloudcode-pa được Antigravity IDE dùng cho chat sinh nội dung (generateContent),
+    // cloudcode-pa thường trả 429 Resource Exhausted đối với personal/IDE tokens.
+    const chatBases = [
+      DAILY_CLOUD_CODE_BASE,
+      'https://daily-cloudcode-pa.sandbox.googleapis.com',
+      PROD_CLOUD_CODE_BASE
+    ]
+
+    for (const base of chatBases) {
+      for (const model of candidateModels) {
+        try {
+          const response = await postJson(
+            `${base}/v1internal:generateContent`,
+            accessToken,
+            {
+              project: projectId,
+              model,
+              request: {
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [{ text: 'Say ok' }]
+                  }
+                ],
+                generationConfig: {
+                  maxOutputTokens: 16
+                }
+              }
+            }
+          )
+
+          lastStatus = response.status
+          if (response.ok) {
+            return {
+              success: true,
+              status: response.status,
+              message: 'Phản hồi thành công (200 OK)'
+            }
+          }
+
+          let errorText = ''
+          try {
+            const errJson = (await response.json()) as { error?: { message?: string } }
+            errorText = errJson?.error?.message || ''
+          } catch {
+            errorText = await response.text().catch(() => '')
+          }
+          lastErrorMsg = errorText || `HTTP ${response.status}`
+
+          if (response.status === 404) {
+            continue
+          }
+
+          return {
+            success: false,
+            status: response.status,
+            message: lastErrorMsg
+          }
+        } catch (fetchErr) {
+          lastErrorMsg = fetchErr instanceof Error ? fetchErr.message : 'Lỗi mạng'
+        }
+      }
+    }
+
+    return {
+      success: false,
+      status: lastStatus,
+      message: lastErrorMsg || 'Không thể gửi tin nhắn thử nghiệm'
+    }
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Lỗi kiểm tra chat Antigravity'
+    }
+  }
+}
+

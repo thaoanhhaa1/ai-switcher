@@ -48,6 +48,20 @@ export interface AntigravityLoginStatus {
   message?: string
 }
 
+export type AntigravitySortOption =
+  | 'default'
+  | 'gemini-desc'
+  | 'gemini-asc'
+  | 'claude-desc'
+  | 'claude-asc'
+
+export interface AntigravityTestChatResult {
+  success: boolean
+  message?: string
+  status?: number
+}
+
+
 export interface CopilotDeviceLoginStart {
   userCode: string
   verificationUri: string
@@ -260,6 +274,10 @@ export interface Api {
   importAntigravityFromFile: (accountId: string, filePath: string) => Promise<AntigravityLoginStatus>
   logoutAntigravity: (accountId: string) => Promise<void>
   pickAntigravityAccountsFile: () => Promise<string | null>
+  testAntigravityChat: (
+    accountId: string,
+    family: 'gemini' | 'claude'
+  ) => Promise<AntigravityTestChatResult>
   getCopilotLoginStatus: (accountId: string) => Promise<CopilotLoginStatus>
   importCopilotFromLive: (accountId: string) => Promise<CopilotLoginStatus>
   importCopilotFromFile: (accountId: string, filePath: string) => Promise<CopilotLoginStatus>

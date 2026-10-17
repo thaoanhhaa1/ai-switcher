@@ -22,6 +22,7 @@ import {
   loginChatGptAccount,
   logoutAccount,
   logoutAntigravityAccount,
+  testAntigravityAccountChat,
   logoutChatGptAccount,
   logoutCopilotAccount,
   openAntigravityDir,
@@ -124,6 +125,9 @@ function registerIpc(): void {
   )
   ipcMain.handle('antigravity:logout', (_event, accountId) => logoutAntigravityAccount(accountId))
   ipcMain.handle('antigravity:pickAccountsFile', () => pickAntigravityAccountsFile())
+  ipcMain.handle('antigravity:testChat', (_event, accountId, family) =>
+    testAntigravityAccountChat(accountId, family)
+  )
   ipcMain.handle('copilot:loginStatus', (_event, accountId) => getCopilotStatus(accountId))
   ipcMain.handle('copilot:importLive', (_event, accountId) => importCopilotLiveAccount(accountId))
   ipcMain.handle('copilot:importFile', (_event, accountId, filePath) =>

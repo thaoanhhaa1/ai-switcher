@@ -7,6 +7,7 @@ import type {
     ActiveConfigStatus,
     ActiveStatuses,
     AntigravityLoginStatus,
+    AntigravityTestChatResult,
     AppData,
     ChatGptLoginStatus,
     CodexSettings,
@@ -67,6 +68,7 @@ import {
     readLiveAntigravityEmail,
     runAntigravityLogin,
     snapshotLiveAntigravityToAccount,
+    testAntigravityChat,
 } from './providers/antigravity';
 import {
     COPILOT_DOCS,
@@ -982,6 +984,13 @@ export async function logoutAntigravityAccount(
     accountId: string,
 ): Promise<void> {
     await clearAntigravityAuth(accountId);
+}
+
+export async function testAntigravityAccountChat(
+    accountId: string,
+    family: 'gemini' | 'claude',
+): Promise<AntigravityTestChatResult> {
+    return testAntigravityChat(accountId, family);
 }
 
 export async function getCopilotStatus(
