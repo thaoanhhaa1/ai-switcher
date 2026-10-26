@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   Account,
   AccountQuota,
@@ -15,6 +15,12 @@ import type {
   ProviderInfo
 } from './types'
 import { sortAntigravityAccounts } from './antigravity-sort'
+import {
+  AUTO_TEST_CHAT_STORAGE_KEY,
+  DEFAULT_AUTO_TEST_CHAT_INTERVAL_MS,
+  calculateNextResetDelayMs,
+  executeAutoTestChatForAccounts
+} from './antigravity-auto-chat'
 import { AccountDialog } from './components/AccountDialog'
 import { AntigravityAccountDialog } from './components/AntigravityAccountDialog'
 import { AntigravityLoginDialog } from './components/AntigravityLoginDialog'
@@ -123,6 +129,101 @@ export default function App() {
     }
   }
 
+  const [autoTestChatEnabled, setAutoTestChatEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_TEST_CHAT_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  const [autoChatNotification, setAutoChatNotification] = useState<{
+    type: 'success' | 'error' | 'info'
+    text: string
+  } | null>(null)
+
+  const autoChatLastTriggeredRef = useRef<Map<string, number>>(new Map())
+  const autoChatInFlightRef = useRef<Set<string>>(new Set())
+
+  const runAutoTestChatCheck = async (
+    accountsToProcess: Account[],
+    currentQuotas: Record<string, AccountQuota>
+  ) => {
+    if (!autoTestChatEnabled) return
+
+    await executeAutoTestChatForAccounts({
+      accounts: accountsToProcess,
+      quotas: currentQuotas,
+      testChatFn: (accountId, family) => window.api.testAntigravityChat(accountId, family),
+      onAccountTriggered: (res) => {
+        const familyLabel = res.family === 'gemini' ? 'Gemini Models' : 'Claude and GPT models'
+        if (res.success) {
+          setAutoChatNotification({
+            type: 'success',
+            text: `Đã tự động gửi chat thử nghiệm ("Say ok") cho tài khoản "${res.accountName}" (${familyLabel}) để kích hoạt chu kỳ 7 ngày.`
+          })
+          const acc = accountsToProcess.find((a) => a.id === res.accountId)
+          if (acc) {
+            void refreshAccountQuota(acc)
+          }
+        } else {
+          setAutoChatNotification({
+            type: 'error',
+            text: `Tự động gửi chat thử nghiệm thất bại cho "${res.accountName}" (${familyLabel}): ${res.message || 'Lỗi không xác định'}`
+          })
+        }
+      },
+      lastTriggeredMap: autoChatLastTriggeredRef.current,
+      inFlightSet: autoChatInFlightRef.current
+    })
+  }
+
+  function handleAutoTestChatToggle(enabled: boolean) {
+    setAutoTestChatEnabled(enabled)
+    try {
+      localStorage.setItem(AUTO_TEST_CHAT_STORAGE_KEY, enabled ? 'true' : 'false')
+    } catch {
+      // ignore
+    }
+    if (enabled && data?.accounts) {
+      void runAutoTestChatCheck(data.accounts, quotas)
+    }
+  }
+
+  useEffect(() => {
+    if (!autoChatNotification) return
+    const timer = setTimeout(() => {
+      setAutoChatNotification(null)
+    }, 10_000)
+    return () => clearTimeout(timer)
+  }, [autoChatNotification])
+
+  useEffect(() => {
+    if (!autoTestChatEnabled) return
+
+    const agAccounts = data?.accounts.filter((account) => account.provider === 'antigravity') ?? []
+    if (!agAccounts.length) return
+
+    // Tự động tính thời gian chờ tối ưu dựa trên mốc reset tuần gần nhất của các tài khoản
+    const delayMs = calculateNextResetDelayMs(agAccounts, quotas)
+
+    const timerId = setTimeout(() => {
+      window.api
+        .getAccountsQuota(agAccounts.map((account) => account.id))
+        .then((nextQuotas) => {
+          setQuotas((prev) => ({ ...prev, ...nextQuotas }))
+          return runAutoTestChatCheck(agAccounts, nextQuotas)
+        })
+        .catch((err) => {
+          console.error('Lỗi kiểm tra định kỳ Antigravity auto test chat:', err)
+        })
+    }, delayMs)
+
+    return () => {
+      clearTimeout(timerId)
+    }
+  }, [autoTestChatEnabled, data?.accounts, quotas])
+
   const displayedAccounts = useMemo(() => {
     if (selectedProviderId === 'antigravity') {
       return sortAntigravityAccounts(providerAccounts, quotas, antigravitySort)
@@ -200,6 +301,9 @@ export default function App() {
     try {
       const next = await window.api.getAccountsQuota(accounts.map((account) => account.id))
       setQuotas(next)
+      if (autoTestChatEnabled) {
+        void runAutoTestChatCheck(accounts, next)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể tải quota')
     } finally {
@@ -213,7 +317,13 @@ export default function App() {
     setRefreshingQuotaIds((prev) => new Set(prev).add(account.id))
     try {
       const nextQuota = await window.api.getAccountQuota(account.provider, account.id)
-      setQuotas((prev) => ({ ...prev, [account.id]: nextQuota }))
+      setQuotas((prev) => {
+        const updated = { ...prev, [account.id]: nextQuota }
+        if (autoTestChatEnabled && account.provider === 'antigravity') {
+          void runAutoTestChatCheck([account], updated)
+        }
+        return updated
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : `Không thể tải quota tài khoản ${account.name}`)
     } finally {
@@ -670,6 +780,24 @@ export default function App() {
             </div>
 
             {error && <div className="inline-message error">{error}</div>}
+            {autoChatNotification && (
+              <div className={`inline-message ${autoChatNotification.type} auto-chat-notification`}>
+                <div className="auto-chat-notification-content">
+                  <span className="auto-chat-notification-icon" aria-hidden="true">
+                    {autoChatNotification.type === 'success' ? '✓' : 'ℹ'}
+                  </span>
+                  <span>{autoChatNotification.text}</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn-dismiss"
+                  onClick={() => setAutoChatNotification(null)}
+                  aria-label="Đóng thông báo"
+                >
+                  ×
+                </button>
+              </div>
+            )}
 
             {providerActiveAccount && (
               <section className="header-quota">
@@ -738,6 +866,25 @@ export default function App() {
                   </h3>
                   {selectedProviderId === 'antigravity' && (
                     <div className="panel-header-actions">
+                      <div
+                        className={`ag-auto-chat-pill ${autoTestChatEnabled ? 'active' : ''}`}
+                        onClick={() => handleAutoTestChatToggle(!autoTestChatEnabled)}
+                        title="Tự động gửi chat thử nghiệm ('Say ok') cho nhóm Gemini và Claude & GPT khi đến thời gian reset tuần hoặc quota tuần đạt 100% để kích hoạt chu kỳ 7 ngày mới"
+                        role="checkbox"
+                        aria-checked={autoTestChatEnabled}
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === ' ' || e.key === 'Enter') {
+                            e.preventDefault()
+                            handleAutoTestChatToggle(!autoTestChatEnabled)
+                          }
+                        }}
+                      >
+                        <span className="ag-auto-chat-switch">
+                          <span className="ag-auto-chat-knob" />
+                        </span>
+                        <span className="ag-auto-chat-text">Auto gửi khi tuần 100%</span>
+                      </div>
                       <label htmlFor="ag-sort-select" className="sort-label">
                         Sắp xếp:
                       </label>
