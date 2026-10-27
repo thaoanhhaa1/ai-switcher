@@ -1,4 +1,3 @@
-import { readFile } from 'fs/promises'
 import type { Account, AccountQuota, AntigravityTestChatResult, ModelQuota, QuotaWindow } from '../../../src/types'
 import {
   deleteStoredAntigravityAccount,
@@ -23,6 +22,7 @@ import {
 import { applyAntigravityIdeAccount } from '../antigravity-ide'
 import { runAntigravityOAuthLogin } from '../antigravity-oauth'
 import { getAntigravityOAuthCredentials } from '../antigravity-oauth-config'
+import { assertValidAccountId } from '../safe-path'
 import { getAntigravityAccountsPath, getOpencodeConfigDir } from '../paths'
 import { loadAppData } from '../storage'
 
@@ -363,9 +363,9 @@ export async function importAntigravityFromLive(accountId: string): Promise<Anti
 
 export async function importAntigravityFromFile(
   accountId: string,
-  filePath: string
+  raw: string
 ): Promise<AntigravityLoginStatus> {
-  const raw = await readFile(filePath, 'utf-8')
+  assertValidAccountId(accountId)
   const entry = normalizeAntigravityEntry(extractEntryFromPayload(JSON.parse(raw) as unknown))
   await saveStoredAntigravityAccount(accountId, entry)
   return getAntigravityLoginStatus(accountId)

@@ -1,6 +1,8 @@
 import { mkdir, readFile, unlink, writeFile, chmod } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getAppDataDir, getAntigravityAccountsPath } from './paths'
+import { getScopedJsonPath } from './safe-path'
+import { ensurePrivateDir, readSecureJson, writeSecureJson } from './secure-storage'
 
 export interface AntigravityAccountEntry {
   email?: string
@@ -25,25 +27,24 @@ function getStorageDir(): string {
 }
 
 export function getStoredAntigravityPath(accountId: string): string {
-  return join(getStorageDir(), `${accountId}.json`)
+  return getScopedJsonPath(getStorageDir(), accountId)
 }
 
 export async function saveStoredAntigravityAccount(
   accountId: string,
   entry: AntigravityAccountEntry
 ): Promise<void> {
-  await mkdir(getStorageDir(), { recursive: true })
-  const path = getStoredAntigravityPath(accountId)
-  await writeFile(path, JSON.stringify(entry, null, 2), { mode: 0o600 })
-  await chmod(path, 0o600)
+  await ensurePrivateDir(getStorageDir())
+  await writeSecureJson(getStoredAntigravityPath(accountId), entry)
 }
 
 export async function loadStoredAntigravityAccount(
   accountId: string
 ): Promise<AntigravityAccountEntry | null> {
   try {
-    const raw = await readFile(getStoredAntigravityPath(accountId), 'utf-8')
-    return JSON.parse(raw) as AntigravityAccountEntry
+    return await readSecureJson<AntigravityAccountEntry>(
+      getStoredAntigravityPath(accountId)
+    )
   } catch {
     return null
   }

@@ -51,7 +51,7 @@ export function AccountDialog({ account, onClose, onSubmit }: AccountDialogProps
     async function loadOptions(key?: string): Promise<void> {
       setLoadingOptions(true)
       try {
-        const next = await window.api.getProviderOptions('codex-freemodel', key)
+        const next = await window.api.getProviderOptions('codex-freemodel', key, account?.id)
         if (cancelled) return
 
         setOptions(next)
@@ -82,12 +82,12 @@ export function AccountDialog({ account, onClose, onSubmit }: AccountDialogProps
       }
     }
 
-    void loadOptions(account?.apiKey)
+    void loadOptions()
 
     return () => {
       cancelled = true
     }
-  }, [account?.apiKey])
+  }, [account?.id])
 
   useEffect(() => {
     let cancelled = false
@@ -138,8 +138,8 @@ export function AccountDialog({ account, onClose, onSubmit }: AccountDialogProps
   }
 
   async function handleValidate(): Promise<void> {
-    const key = apiKey.trim() || account?.apiKey
-    if (!key) {
+    const key = apiKey.trim()
+    if (!key && !account?.id) {
       setMessage({ type: 'error', text: 'Nhập API key trước khi kiểm tra' })
       return
     }
@@ -147,11 +147,15 @@ export function AccountDialog({ account, onClose, onSubmit }: AccountDialogProps
     setValidating(true)
     setMessage(null)
     try {
-      const result = await window.api.validateApiKey('codex-freemodel', key)
+      const result = await window.api.validateApiKey('codex-freemodel', key || undefined, account?.id)
       setMessage({ type: result.valid ? 'success' : 'error', text: result.message })
 
       if (result.valid) {
-        const next = await window.api.getProviderOptions('codex-freemodel', key)
+        const next = await window.api.getProviderOptions(
+          'codex-freemodel',
+          key || undefined,
+          account?.id
+        )
         setOptions(next)
         if (account?.id) {
           await reloadQuota()

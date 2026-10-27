@@ -10,6 +10,7 @@ import {
 import { fetchFreeModelUsageWithSession } from '../freemodel-auth';
 import { getCodexAuthPath, getCodexConfigPath, getCodexHome } from '../paths';
 import { formatResetAt, formatResetLabelFromTimestamp } from '../quota-utils';
+import { writePrivateFile } from '../secure-storage';
 
 export const FREEMODEL_CODEX_DOCS =
     'https://freemodel.dev/dashboard/docs#codex';
@@ -201,7 +202,7 @@ export async function applyCodexFreeModelAccount(
         OPENAI_API_KEY: account.apiKey,
     };
 
-    await writeFile(getCodexAuthPath(), JSON.stringify(auth, null, 2), 'utf-8');
+    await writePrivateFile(getCodexAuthPath(), JSON.stringify(auth, null, 2));
     await writeFile(
         getCodexConfigPath(),
         buildConfigToml(account.settings),

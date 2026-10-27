@@ -31,7 +31,9 @@ function parseUpstreamConstants(source: string): AntigravityOAuthCredentials {
 }
 
 async function fetchUpstreamCredentials(): Promise<AntigravityOAuthCredentials> {
-  const response = await fetch(UPSTREAM_CONSTANTS_URL)
+  const response = await fetch(UPSTREAM_CONSTANTS_URL, {
+    signal: AbortSignal.timeout(10_000)
+  })
   if (!response.ok) {
     throw new Error(
       `Không tải được Antigravity OAuth credentials (HTTP ${response.status}). ` +

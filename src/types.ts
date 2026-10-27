@@ -11,7 +11,10 @@ export interface Account {
   id: string
   name: string
   provider: ProviderId
+  /** Raw key — chỉ tồn tại trong Main process, không gửi qua IPC tới Renderer. */
   apiKey: string
+  /** Bản đã che của apiKey dành cho Renderer (SEC-09). */
+  apiKeyMasked?: string
   settings: CodexSettings
   createdAt: string
   lastUsedAt: string | null
@@ -250,8 +253,16 @@ export interface Api {
   ) => Promise<Account>
   deleteAccount: (id: string) => Promise<void>
   switchAccount: (id: string) => Promise<ActiveStatuses>
-  validateApiKey: (provider: ProviderId, apiKey: string) => Promise<ValidateKeyResult>
-  getProviderOptions: (provider: ProviderId, apiKey?: string) => Promise<ProviderOptions>
+  validateApiKey: (
+    provider: ProviderId,
+    apiKey?: string,
+    accountId?: string
+  ) => Promise<ValidateKeyResult>
+  getProviderOptions: (
+    provider: ProviderId,
+    apiKey?: string,
+    accountId?: string
+  ) => Promise<ProviderOptions>
   getAccountQuota: (provider: ProviderId, accountId: string) => Promise<AccountQuota>
   getAccountsQuota: (accountIds?: string[]) => Promise<Record<string, AccountQuota>>
   getFreeModelLoginStatus: (accountId: string) => Promise<FreeModelLoginStatus>

@@ -18,6 +18,7 @@ import {
   type CodexAuthJson
 } from '../codex-auth-storage'
 import { getCodexConfigPath, getCodexHome } from '../paths'
+import { assertValidAccountId } from '../safe-path'
 import {
   formatPlanType,
   formatResetAt,
@@ -240,9 +241,9 @@ export async function importChatGptAuthFromLive(accountId: string): Promise<Code
 
 export async function importChatGptAuthFromFile(
   accountId: string,
-  filePath: string
+  raw: string
 ): Promise<CodexAuthJson> {
-  const raw = await readFile(filePath, 'utf-8')
+  assertValidAccountId(accountId)
   const auth = JSON.parse(raw) as CodexAuthJson
   if (!isChatGptAuth(auth)) {
     throw new Error('File auth.json không hợp lệ hoặc không phải ChatGPT OAuth')

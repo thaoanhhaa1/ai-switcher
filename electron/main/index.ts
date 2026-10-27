@@ -43,7 +43,11 @@ import {
   validateApiKey,
   verifyAccountOtp
 } from './services'
-import { loadAppData } from './storage'
+import {
+  loadAppData,
+  sanitizeAccountForRenderer,
+  sanitizeAppDataForRenderer
+} from './storage'
 import { getAppDataDir, getCodexHome, getOpencodeConfigDir } from './paths'
 
 function getRuntimeInfo(): AppRuntimeInfo {
@@ -68,7 +72,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -79,8 +83,21 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    try {
+      const parsed = new URL(details.url)
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        void shell.openExternal(details.url)
+      }
+    } catch {
+      // Ignore malformed URLs.
+    }
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (navigationUrl !== mainWindow.webContents.getURL()) {
+      event.preventDefault()
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -93,14 +110,24 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('app:getRuntimeInfo', () => getRuntimeInfo())
   ipcMain.handle('providers:list', () => getProviders())
-  ipcMain.handle('app:getData', () => loadAppData())
+  ipcMain.handle('app:getData', async () => sanitizeAppDataForRenderer(await loadAppData()))
   ipcMain.handle('app:getActiveStatuses', () => getActiveStatuses())
-  ipcMain.handle('account:add', (_event, input) => addAccount(input).then((result) => result.account))
-  ipcMain.handle('account:update', (_event, id, input) => updateAccount(id, input).then((result) => result.account))
-  ipcMain.handle('account:delete', (_event, id) => deleteAccount(id))
+  ipcMain.handle('account:add', (_event, input) =>
+    addAccount(input).then((result) => sanitizeAccountForRenderer(result.account))
+  )
+  ipcMain.handle('account:update', (_event, id, input) =>
+    updateAccount(id, input).then((result) => sanitizeAccountForRenderer(result.account))
+  )
+  ipcMain.handle('account:delete', (_event, id) =>
+    deleteAccount(id).then(sanitizeAppDataForRenderer)
+  )
   ipcMain.handle('account:switch', (_event, id) => switchAccount(id).then((result) => result.statuses))
-  ipcMain.handle('account:validate', (_event, provider, apiKey) => validateApiKey(provider, apiKey))
-  ipcMain.handle('provider:options', (_event, provider, apiKey) => getProviderOptions(provider, apiKey))
+  ipcMain.handle('account:validate', (_event, provider, apiKey, accountId) =>
+    validateApiKey(provider, apiKey, accountId)
+  )
+  ipcMain.handle('provider:options', (_event, provider, apiKey, accountId) =>
+    getProviderOptions(provider, apiKey, accountId)
+  )
   ipcMain.handle('account:quota', (_event, provider, accountId) => getAccountQuota(provider, accountId))
   ipcMain.handle('accounts:quota', (_event, accountIds) => getAccountsQuota(accountIds))
   ipcMain.handle('freemodel:loginStatus', (_event, accountId) => getAccountLoginStatus(accountId))

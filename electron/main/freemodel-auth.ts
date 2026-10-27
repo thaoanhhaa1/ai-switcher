@@ -1,7 +1,9 @@
-import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
+import { unlink } from 'fs/promises'
 import { join } from 'path'
 import type { FreeModelLoginStatus } from '../../src/types'
 import { getAppDataDir } from './paths'
+import { getScopedJsonPath } from './safe-path'
+import { ensurePrivateDir, readSecureJson, writeSecureJson } from './secure-storage'
 
 export const FREEMODEL_DASHBOARD_URL = 'https://freemodel.dev'
 
@@ -23,17 +25,38 @@ interface OtpPendingState {
   email: string
   cookieHeader: string
   createdAt: number
+  attempts: number
 }
 
 const otpPending = new Map<string, OtpPendingState>()
+const otpLockouts = new Map<string, number>()
+const otpEmailQueues = new Map<string, Promise<void>>()
 const OTP_TTL_MS = 15 * 60 * 1000
+const OTP_MAX_ATTEMPTS = 5
+const OTP_LOCKOUT_MS = 15 * 60 * 1000
+
+function withOtpEmailLock<T>(email: string, task: () => Promise<T>): Promise<T> {
+  const previous = otpEmailQueues.get(email) ?? Promise.resolve()
+  const run = previous.then(task)
+  const tracked = run.then(
+    () => undefined,
+    () => undefined
+  )
+  otpEmailQueues.set(email, tracked)
+  void tracked.finally(() => {
+    if (otpEmailQueues.get(email) === tracked) {
+      otpEmailQueues.delete(email)
+    }
+  })
+  return run
+}
 
 function getSessionsDir(): string {
   return join(getAppDataDir(), 'freemodel-sessions')
 }
 
 function getSessionPath(accountId: string): string {
-  return join(getSessionsDir(), `${accountId}.json`)
+  return getScopedJsonPath(getSessionsDir(), accountId)
 }
 
 function cookiePairsFromHeader(cookieHeader: string): Map<string, string> {
@@ -95,16 +118,15 @@ async function freemodelRequest(
 
 async function loadSession(accountId: string): Promise<FreeModelSession | null> {
   try {
-    const raw = await readFile(getSessionPath(accountId), 'utf-8')
-    return JSON.parse(raw) as FreeModelSession
+    return await readSecureJson<FreeModelSession>(getSessionPath(accountId))
   } catch {
     return null
   }
 }
 
 async function saveSession(session: FreeModelSession): Promise<void> {
-  await mkdir(getSessionsDir(), { recursive: true })
-  await writeFile(getSessionPath(session.accountId), JSON.stringify(session, null, 2), 'utf-8')
+  await ensurePrivateDir(getSessionsDir())
+  await writeSecureJson(getSessionPath(session.accountId), session)
 }
 
 export async function clearFreeModelSession(accountId: string): Promise<void> {
@@ -122,14 +144,48 @@ function cleanupExpiredOtp(): void {
       otpPending.delete(email)
     }
   }
+  for (const [email, lockedUntil] of otpLockouts.entries()) {
+    if (now >= lockedUntil) {
+      otpLockouts.delete(email)
+    }
+  }
 }
 
-export async function sendFreeModelOtp(email: string): Promise<{ success: boolean; message: string }> {
-  cleanupExpiredOtp()
+function getOtpLockoutRemainingMs(email: string): number {
+  const lockedUntil = otpLockouts.get(email)
+  if (!lockedUntil) return 0
 
+  const remaining = lockedUntil - Date.now()
+  if (remaining <= 0) {
+    otpLockouts.delete(email)
+    return 0
+  }
+
+  return remaining
+}
+
+function lockoutMessage(remainingMs: number): string {
+  const minutes = Math.max(1, Math.ceil(remainingMs / 60000))
+  return `Bạn đã nhập sai OTP quá ${OTP_MAX_ATTEMPTS} lần. Vui lòng thử lại sau ${minutes} phút.`
+}
+
+export function sendFreeModelOtp(email: string): Promise<{ success: boolean; message: string }> {
   const normalizedEmail = email.trim().toLowerCase()
   if (!normalizedEmail) {
-    return { success: false, message: 'Nhập email FreeModel' }
+    return Promise.resolve({ success: false, message: 'Nhập email FreeModel' })
+  }
+
+  return withOtpEmailLock(normalizedEmail, () => sendFreeModelOtpLocked(normalizedEmail))
+}
+
+async function sendFreeModelOtpLocked(
+  normalizedEmail: string
+): Promise<{ success: boolean; message: string }> {
+  cleanupExpiredOtp()
+
+  const remainingLockoutMs = getOtpLockoutRemainingMs(normalizedEmail)
+  if (remainingLockoutMs > 0) {
+    return { success: false, message: lockoutMessage(remainingLockoutMs) }
   }
 
   try {
@@ -144,10 +200,12 @@ export async function sendFreeModelOtp(email: string): Promise<{ success: boolea
     }
 
     const setCookies = extractSetCookies(response)
+    const previousAttempts = otpPending.get(normalizedEmail)?.attempts ?? 0
     otpPending.set(normalizedEmail, {
       email: normalizedEmail,
       cookieHeader: mergeCookieHeaders('', setCookies),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      attempts: previousAttempts
     })
 
     return { success: true, message: 'Đã gửi mã OTP tới email của bạn' }
@@ -157,24 +215,48 @@ export async function sendFreeModelOtp(email: string): Promise<{ success: boolea
   }
 }
 
-export async function verifyFreeModelOtp(
+export function verifyFreeModelOtp(
   accountId: string,
   email: string,
   code: string
 ): Promise<{ success: boolean; message: string; loginStatus?: FreeModelLoginStatus }> {
-  cleanupExpiredOtp()
-
   const normalizedEmail = email.trim().toLowerCase()
   const normalizedCode = code.replace(/\D/g, '').slice(0, 6)
 
   if (!normalizedEmail || normalizedCode.length < 6) {
-    return { success: false, message: 'Nhập email và mã OTP 6 số' }
+    return Promise.resolve({ success: false, message: 'Nhập email và mã OTP 6 số' })
+  }
+
+  return withOtpEmailLock(normalizedEmail, () =>
+    verifyFreeModelOtpLocked(accountId, normalizedEmail, normalizedCode)
+  )
+}
+
+async function verifyFreeModelOtpLocked(
+  accountId: string,
+  normalizedEmail: string,
+  normalizedCode: string
+): Promise<{ success: boolean; message: string; loginStatus?: FreeModelLoginStatus }> {
+  cleanupExpiredOtp()
+
+  const remainingLockoutMs = getOtpLockoutRemainingMs(normalizedEmail)
+  if (remainingLockoutMs > 0) {
+    return { success: false, message: lockoutMessage(remainingLockoutMs) }
   }
 
   const pending = otpPending.get(normalizedEmail)
   if (!pending) {
     return { success: false, message: 'OTP đã hết hạn. Vui lòng gửi lại mã.' }
   }
+
+  if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+    otpPending.delete(normalizedEmail)
+    otpLockouts.set(normalizedEmail, Date.now() + OTP_LOCKOUT_MS)
+    return { success: false, message: lockoutMessage(OTP_LOCKOUT_MS) }
+  }
+
+  pending.attempts += 1
+  const attempt = pending.attempts
 
   try {
     const response = await freemodelRequest('/api/auth/verify-otp', {
@@ -189,7 +271,18 @@ export async function verifyFreeModelOtp(
     }
 
     if (!response.ok || !payload.user) {
-      return { success: false, message: payload.error ?? 'Mã OTP không hợp lệ' }
+      if (attempt >= OTP_MAX_ATTEMPTS) {
+        otpPending.delete(normalizedEmail)
+        otpLockouts.set(normalizedEmail, Date.now() + OTP_LOCKOUT_MS)
+        return { success: false, message: lockoutMessage(OTP_LOCKOUT_MS) }
+      }
+
+      const remainingAttempts = OTP_MAX_ATTEMPTS - attempt
+      const baseMessage = payload.error ?? 'Mã OTP không hợp lệ'
+      return {
+        success: false,
+        message: `${baseMessage} (còn ${remainingAttempts} lần thử)`
+      }
     }
 
     const cookieHeader = mergeCookieHeaders(pending.cookieHeader, extractSetCookies(response))
@@ -203,6 +296,7 @@ export async function verifyFreeModelOtp(
 
     await saveSession(session)
     otpPending.delete(normalizedEmail)
+    otpLockouts.delete(normalizedEmail)
 
     return {
       success: true,

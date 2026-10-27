@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'fs/promises'
+import { access, chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { promisify } from 'util'
@@ -33,8 +33,14 @@ export interface SqliteDriver {
   finalize(dbPath: string): Promise<void>
 }
 
-export function escapeSqlString(value: string): string {
-  return value.replace(/'/g, "''")
+/**
+ * Biểu diễn chuỗi thành SQL text literal bằng hex blob — mọi byte được mã hóa
+ * `X'...'` với bảng chữ cái [0-9a-f], nên không thể phá vỡ literal (không cần
+ * escape quote/backslash/newline/NUL). Dùng cho driver CLI vốn không bind được
+ * tham số qua `execFile`.
+ */
+function sqlTextLiteral(value: string): string {
+  return `CAST(X'${Buffer.from(value, 'utf8').toString('hex')}' AS TEXT)`
 }
 
 export async function fileExists(path: string): Promise<boolean> {
@@ -245,7 +251,7 @@ function createCliDriver(): SqliteDriver {
         const outPath = join(dir, 'out')
         await sqliteCliQuery(
           dbPath,
-          `SELECT writefile('${escapeSqlString(outPath)}', value) FROM ItemTable WHERE key = '${escapeSqlString(key)}' LIMIT 1;`
+          `SELECT writefile(${sqlTextLiteral(outPath)}, value) FROM ItemTable WHERE key = ${sqlTextLiteral(key)} LIMIT 1;`
         )
         if (!(await fileExists(outPath))) return null
         return readFile(outPath, 'utf8')
@@ -262,9 +268,9 @@ function createCliDriver(): SqliteDriver {
           const valuePath = join(dir, `value-${index}.txt`)
           await writeFile(valuePath, value, 'utf8')
           statements.push(
-            `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${escapeSqlString(
+            `INSERT OR REPLACE INTO ItemTable (key, value) VALUES (${sqlTextLiteral(
               key
-            )}', CAST(readfile('${escapeSqlString(valuePath)}') AS TEXT));`
+            )}, CAST(readfile(${sqlTextLiteral(valuePath)}) AS TEXT));`
           )
           index += 1
         }
@@ -281,7 +287,7 @@ function createCliDriver(): SqliteDriver {
       // R5 INFO 1: kèm SELECT changes() để biết số dòng xóa thật (finalize gate)
       const statements = keys.map(
         (key) =>
-          `DELETE FROM ItemTable WHERE key = '${escapeSqlString(key)}';\nSELECT changes();`
+          `DELETE FROM ItemTable WHERE key = ${sqlTextLiteral(key)};\nSELECT changes();`
       )
       // R6 INFO 4: bọc batch trong transaction (giống writeValues) — all-or-nothing.
       const output = await sqliteCliQuery(dbPath, `BEGIN;\n${statements.join('\n')}\nCOMMIT;`)
@@ -295,7 +301,7 @@ function createCliDriver(): SqliteDriver {
     async listKeys(dbPath, likePattern) {
       const output = await sqliteCliQuery(
         dbPath,
-        `SELECT key FROM ItemTable WHERE key LIKE '${escapeSqlString(likePattern)}' ESCAPE '\\';`
+        `SELECT key FROM ItemTable WHERE key LIKE ${sqlTextLiteral(likePattern)} ESCAPE '\\';`
       )
       return output.split('\n').filter(Boolean)
     },
@@ -401,6 +407,7 @@ export async function backupDatabase(dbPath: string): Promise<string> {
   await driver.finalize(dbPath)
 
   await copyFile(dbPath, backupPath)
+  await chmod(backupPath, 0o600).catch(() => undefined)
 
   try {
     const siblings = await readdir(dir)

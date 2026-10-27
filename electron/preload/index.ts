@@ -10,8 +10,10 @@ const api: Api = {
   updateAccount: (id, input) => ipcRenderer.invoke('account:update', id, input),
   deleteAccount: (id) => ipcRenderer.invoke('account:delete', id),
   switchAccount: (id) => ipcRenderer.invoke('account:switch', id),
-  validateApiKey: (provider, apiKey) => ipcRenderer.invoke('account:validate', provider, apiKey),
-  getProviderOptions: (provider, apiKey) => ipcRenderer.invoke('provider:options', provider, apiKey),
+  validateApiKey: (provider, apiKey, accountId) =>
+    ipcRenderer.invoke('account:validate', provider, apiKey, accountId),
+  getProviderOptions: (provider, apiKey, accountId) =>
+    ipcRenderer.invoke('provider:options', provider, apiKey, accountId),
   getAccountQuota: (provider, accountId) => ipcRenderer.invoke('account:quota', provider, accountId),
   getAccountsQuota: (accountIds) => ipcRenderer.invoke('accounts:quota', accountIds),
   getFreeModelLoginStatus: (accountId) => ipcRenderer.invoke('freemodel:loginStatus', accountId),

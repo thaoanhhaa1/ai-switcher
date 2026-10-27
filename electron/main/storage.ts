@@ -1,8 +1,15 @@
-import { mkdir, readFile, writeFile, access } from 'fs/promises'
+import { readFile, access } from 'fs/promises'
 import { constants } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import type { Account, AppData, ProviderId, UsageEvent } from '../../src/types'
 import { getAppDataDir, getAppDataPath } from './paths'
+import {
+  decodeSecureJson,
+  ensurePrivateDir,
+  isEncryptionAvailable,
+  writeSecureJson
+} from './secure-storage'
+import { maskApiKey } from './crypto'
 
 export const EMPTY_ACTIVE_ACCOUNT_IDS: Record<ProviderId, string | null> = {
   'codex-freemodel': null,
@@ -127,13 +134,37 @@ export async function loadAppData(): Promise<AppData> {
   }
 
   const raw = await readFile(path, 'utf-8')
-  const parsed = JSON.parse(raw) as Partial<AppData> & { activeAccountId?: string | null }
-  return migrateAppData(parsed)
+  const decoded = decodeSecureJson<
+    Partial<AppData> & { activeAccountId?: string | null }
+  >(raw)
+  const data = migrateAppData(decoded.value)
+
+  if (!decoded.encrypted && isEncryptionAvailable()) {
+    await writeSecureJson(path, data).catch(() => undefined)
+  }
+
+  return data
 }
 
 export async function saveAppData(data: AppData): Promise<void> {
-  await mkdir(getAppDataDir(), { recursive: true })
-  await writeFile(getAppDataPath(), JSON.stringify(data, null, 2), 'utf-8')
+  await ensurePrivateDir(getAppDataDir())
+  await writeSecureJson(getAppDataPath(), data)
+}
+
+/** SEC-09: không bao giờ đưa apiKey nguyên bản qua ranh giới IPC tới Renderer. */
+export function sanitizeAccountForRenderer(account: Account): Account {
+  return {
+    ...account,
+    apiKey: '',
+    apiKeyMasked: maskApiKey(account.apiKey)
+  }
+}
+
+export function sanitizeAppDataForRenderer(data: AppData): AppData {
+  return {
+    ...data,
+    accounts: data.accounts.map(sanitizeAccountForRenderer)
+  }
 }
 
 export async function appendUsageEvent(

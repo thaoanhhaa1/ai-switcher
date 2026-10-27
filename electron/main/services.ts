@@ -106,6 +106,11 @@ import {
     saveAppData,
     withActiveAccountForProvider,
 } from './storage';
+import {
+    approveImportFile,
+    assertValidAccountId,
+    consumeApprovedImportFile,
+} from './safe-path';
 
 const PROVIDERS: ProviderInfo[] = [
     {
@@ -702,12 +707,33 @@ export async function switchAccount(
     return { data: withLog, statuses };
 }
 
+async function resolveAccountApiKey(
+    apiKey: string | undefined,
+    accountId: string | undefined,
+): Promise<string | undefined> {
+    const provided = apiKey?.trim();
+    if (provided) return provided;
+    if (!accountId) return undefined;
+
+    const data = await loadAppData();
+    const account = findAccount(data, accountId);
+    return account?.apiKey.trim() || undefined;
+}
+
 export async function validateApiKey(
     provider: ProviderId,
-    apiKey: string,
+    apiKey?: string,
+    accountId?: string,
 ): Promise<{ valid: boolean; message: string }> {
     if (provider === 'codex-freemodel') {
-        return validateFreeModelKey(apiKey.trim());
+        const key = await resolveAccountApiKey(apiKey, accountId);
+        if (!key) {
+            return {
+                valid: false,
+                message: 'Chưa có API key để kiểm tra',
+            };
+        }
+        return validateFreeModelKey(key);
     }
 
     if (provider === 'antigravity') {
@@ -730,9 +756,11 @@ export async function validateApiKey(
 export async function getProviderOptions(
     provider: ProviderId,
     apiKey?: string,
+    accountId?: string,
 ): Promise<ProviderOptions> {
     if (provider === 'codex-freemodel') {
-        return getCodexFreeModelOptions(apiKey);
+        const key = await resolveAccountApiKey(apiKey, accountId);
+        return getCodexFreeModelOptions(key);
     }
 
     if (provider === 'codex-chatgpt') {
@@ -919,7 +947,9 @@ export async function importChatGptFileAccount(
     accountId: string,
     filePath: string,
 ): Promise<ChatGptLoginStatus> {
-    const auth = await importChatGptAuthFromFile(accountId, filePath);
+    assertValidAccountId(accountId);
+    const approvedFile = await consumeApprovedImportFile(filePath);
+    const auth = await importChatGptAuthFromFile(accountId, approvedFile.content);
     const identity = parseChatGptIdentity(auth);
     await persistChatGptIdentity(accountId, identity);
     return getChatGptLoginStatus(accountId);
@@ -972,7 +1002,9 @@ export async function importAntigravityFileAccount(
     accountId: string,
     filePath: string,
 ): Promise<AntigravityLoginStatus> {
-    const status = await importAntigravityFromFile(accountId, filePath);
+    assertValidAccountId(accountId);
+    const approvedFile = await consumeApprovedImportFile(filePath);
+    const status = await importAntigravityFromFile(accountId, approvedFile.content);
     await persistAntigravityIdentity(accountId, {
         email: status.email,
         projectId: status.projectId,
@@ -1011,7 +1043,9 @@ export async function importCopilotFileAccount(
     accountId: string,
     filePath: string,
 ): Promise<CopilotLoginStatus> {
-    const status = await importCopilotFromFile(accountId, filePath);
+    assertValidAccountId(accountId);
+    const approvedFile = await consumeApprovedImportFile(filePath);
+    const status = await importCopilotFromFile(accountId, approvedFile.content);
     await persistCopilotIdentity(accountId, { username: status.username });
     return status;
 }
@@ -1056,7 +1090,7 @@ export async function pickCopilotSnapshotFile(): Promise<string | null> {
         return null;
     }
 
-    return result.filePaths[0];
+    return approveImportFile(result.filePaths[0]);
 }
 
 export async function pickAuthJsonFile(): Promise<string | null> {
@@ -1070,7 +1104,7 @@ export async function pickAuthJsonFile(): Promise<string | null> {
         return null;
     }
 
-    return result.filePaths[0];
+    return approveImportFile(result.filePaths[0]);
 }
 
 export async function pickAntigravityAccountsFile(): Promise<string | null> {
@@ -1084,7 +1118,7 @@ export async function pickAntigravityAccountsFile(): Promise<string | null> {
         return null;
     }
 
-    return result.filePaths[0];
+    return approveImportFile(result.filePaths[0]);
 }
 
 export async function openCodexDir(): Promise<void> {

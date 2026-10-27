@@ -1,6 +1,13 @@
-import { mkdir, readFile, unlink, writeFile, chmod } from 'fs/promises'
+import { readFile, unlink } from 'fs/promises'
 import { join } from 'path'
 import { getAppDataDir, getCodexAuthPath } from './paths'
+import { getScopedJsonPath } from './safe-path'
+import {
+  ensurePrivateDir,
+  readSecureJson,
+  writePrivateFile,
+  writeSecureJson
+} from './secure-storage'
 
 export interface CodexAuthTokens {
   id_token: string
@@ -28,20 +35,17 @@ function getAuthStorageDir(): string {
 }
 
 export function getStoredAuthPath(accountId: string): string {
-  return join(getAuthStorageDir(), `${accountId}.json`)
+  return getScopedJsonPath(getAuthStorageDir(), accountId)
 }
 
 export async function saveStoredAuth(accountId: string, auth: CodexAuthJson): Promise<void> {
-  await mkdir(getAuthStorageDir(), { recursive: true })
-  const path = getStoredAuthPath(accountId)
-  await writeFile(path, JSON.stringify(auth, null, 2), { mode: 0o600 })
-  await chmod(path, 0o600)
+  await ensurePrivateDir(getAuthStorageDir())
+  await writeSecureJson(getStoredAuthPath(accountId), auth)
 }
 
 export async function loadStoredAuth(accountId: string): Promise<CodexAuthJson | null> {
   try {
-    const raw = await readFile(getStoredAuthPath(accountId), 'utf-8')
-    return JSON.parse(raw) as CodexAuthJson
+    return await readSecureJson<CodexAuthJson>(getStoredAuthPath(accountId))
   } catch {
     return null
   }
@@ -65,9 +69,7 @@ export async function readLiveAuth(): Promise<CodexAuthJson | null> {
 }
 
 export async function writeLiveAuth(auth: CodexAuthJson): Promise<void> {
-  const path = getCodexAuthPath()
-  await writeFile(path, JSON.stringify(auth, null, 2), { mode: 0o600 })
-  await chmod(path, 0o600)
+  await writePrivateFile(getCodexAuthPath(), JSON.stringify(auth, null, 2))
 }
 
 export function isChatGptAuth(auth: CodexAuthJson | null): auth is CodexAuthJson & { tokens: CodexAuthTokens } {

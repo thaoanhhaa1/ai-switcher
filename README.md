@@ -106,7 +106,7 @@ Tham khảo: [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-a
 
 ## Yêu cầu
 
-- Node.js 18+
+- Node.js 22.12+
 - npm
 - **Codex CLI** — `npm install -g @openai/codex` (login ChatGPT)
 - **OpenCode CLI** — `npm install -g opencode` (login Antigravity)

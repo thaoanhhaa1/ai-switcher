@@ -23,6 +23,7 @@ import {
 } from '../copilot-ide'
 import { formatResetAt } from '../quota-utils'
 import { getAppDataDir } from '../paths'
+import { assertValidAccountId } from '../safe-path'
 import { findAccount, loadAppData } from '../storage'
 import { pollForToken, requestDeviceCode, type GithubTokenResult } from '../copilot-device-flow'
 
@@ -667,9 +668,9 @@ function extractEntryFromPayload(payload: unknown): CopilotAccountEntry {
 
 export async function importCopilotFromFile(
   accountId: string,
-  filePath: string
+  raw: string
 ): Promise<CopilotLoginStatus> {
-  const raw = await readFile(filePath, 'utf-8')
+  assertValidAccountId(accountId)
   const entry = extractEntryFromPayload(JSON.parse(raw) as unknown)
 
   // Live import đã check trùng auth; file import cũng phải check (CODE_REVIEW M3)

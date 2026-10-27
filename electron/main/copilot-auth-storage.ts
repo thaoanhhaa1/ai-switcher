@@ -1,7 +1,9 @@
-import { mkdir, readFile, unlink, writeFile, chmod } from 'fs/promises'
+import { unlink } from 'fs/promises'
 import { join } from 'path'
 import type { CopilotIdeTarget } from './copilot-ide'
 import { getAppDataDir } from './paths'
+import { getScopedJsonPath } from './safe-path'
+import { ensurePrivateDir, readSecureJson, writeSecureJson } from './secure-storage'
 
 export interface CopilotIdeSnapshot {
   username: string
@@ -26,36 +28,25 @@ function getStorageDir(): string {
 }
 
 export function getStoredCopilotPath(accountId: string): string {
-  return join(getStorageDir(), `${accountId}.json`)
+  return getScopedJsonPath(getStorageDir(), accountId)
 }
 
 export async function saveStoredCopilotAccount(
   accountId: string,
   entry: CopilotAccountEntry
 ): Promise<void> {
-  await mkdir(getStorageDir(), { recursive: true })
-  const path = getStoredCopilotPath(accountId)
-  await writeFile(
-    path,
-    JSON.stringify(
-      {
-        ...entry,
-        capturedAt: entry.capturedAt ?? new Date().toISOString()
-      },
-      null,
-      2
-    ),
-    { mode: 0o600 }
-  )
-  await chmod(path, 0o600)
+  await ensurePrivateDir(getStorageDir())
+  await writeSecureJson(getStoredCopilotPath(accountId), {
+    ...entry,
+    capturedAt: entry.capturedAt ?? new Date().toISOString()
+  })
 }
 
 export async function loadStoredCopilotAccount(
   accountId: string
 ): Promise<CopilotAccountEntry | null> {
   try {
-    const raw = await readFile(getStoredCopilotPath(accountId), 'utf-8')
-    return JSON.parse(raw) as CopilotAccountEntry
+    return await readSecureJson<CopilotAccountEntry>(getStoredCopilotPath(accountId))
   } catch {
     return null
   }

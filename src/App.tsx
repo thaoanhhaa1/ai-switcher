@@ -934,7 +934,7 @@ export default function App() {
                                 </div>
                                 <div className="account-meta account-summary">
                                   {account.provider === 'codex-freemodel'
-                                    ? `Key: ${maskKey(account.apiKey)}`
+                                    ? `Key: ${account.apiKeyMasked ?? maskKey(account.apiKey)}`
                                     : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
                                   {account.provider !== 'antigravity' &&
                                     account.provider !== 'github-copilot' && (
@@ -957,7 +957,7 @@ export default function App() {
                               <div className="account-card-body">
                                 <div className="account-meta">
                                   {account.provider === 'codex-freemodel'
-                                    ? `Key: ${maskKey(account.apiKey)}`
+                                    ? `Key: ${account.apiKeyMasked ?? maskKey(account.apiKey)}`
                                     : `Auth: ${loginInfo.loggedIn ? (loginInfo.email ?? 'OAuth') : 'Chưa login'}`}
                                   {account.provider !== 'antigravity' &&
                                     account.provider !== 'github-copilot' && (

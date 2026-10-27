@@ -177,6 +177,47 @@ describe('sqlite-db deleteValues — CLI driver (R5 INFO 1 + R6)', () => {
   })
 })
 
+describe('sqlite-db CLI — chống SQL injection bằng hex literal', () => {
+  const evilKey = "x'); DROP TABLE ItemTable; --\\\n🚀"
+
+  function hexLiteral(value: string): string {
+    return `CAST(X'${Buffer.from(value, 'utf8').toString('hex')}' AS TEXT)`
+  }
+
+  it('writeValues không chèn key thô — quote/backslash/newline/unicode đều thành hex', async () => {
+    stubExecFile((file, args) => {
+      if (args[0] === '--version') return { stdout: '3.45.0' }
+      return { stdout: '' }
+    })
+
+    const driver = await getSqliteDriver()
+    await driver.writeValues('/tmp/x.vscdb', { [evilKey]: 'v' })
+
+    const sql = String(vi.mocked(execFile).mock.calls.at(-1)?.[1]?.[2] ?? '')
+    expect(sql).toContain(hexLiteral(evilKey))
+    expect(sql).not.toContain('DROP TABLE')
+    expect(sql).not.toContain("x')")
+  })
+
+  it('deleteValues + listKeys cũng escape qua hex literal', async () => {
+    stubExecFile((file, args) => {
+      if (args[0] === '--version') return { stdout: '3.45.0' }
+      return { stdout: '' }
+    })
+
+    const driver = await getSqliteDriver()
+    await driver.deleteValues('/tmp/x.vscdb', [evilKey])
+    const deleteSql = String(vi.mocked(execFile).mock.calls.at(-1)?.[1]?.[2] ?? '')
+    expect(deleteSql).toContain(hexLiteral(evilKey))
+    expect(deleteSql).not.toContain('DROP TABLE')
+
+    await driver.listKeys('/tmp/x.vscdb', `${evilKey}%`)
+    const listSql = String(vi.mocked(execFile).mock.calls.at(-1)?.[1]?.[2] ?? '')
+    expect(listSql).toContain(hexLiteral(`${evilKey}%`))
+    expect(listSql).not.toContain('DROP TABLE')
+  })
+})
+
 describe('sqlite-db CLI — busy timeout + lỗi busy dịch tiếng Việt (R6 L2)', () => {
   it('mọi sqliteCliQuery đều kèm dot-command .timeout 10000 (giống busy_timeout native)', async () => {
     stubExecFile((file, args) => {
