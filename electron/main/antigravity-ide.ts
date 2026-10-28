@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process'
+import { chmod, mkdir, writeFile } from 'fs/promises'
 import { homedir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { promisify } from 'util'
 import type { AntigravityAccountEntry } from './antigravity-auth-storage'
 import { shouldApplyAntigravityIde } from './env'
@@ -24,6 +25,15 @@ const IDE_APP_NAMES = ['Antigravity IDE', 'Antigravity'] as const
 const OAUTH_TOKEN_KEY = 'antigravityUnifiedStateSync.oauthToken'
 const USER_STATUS_KEY = 'antigravityUnifiedStateSync.userStatus'
 const ENTERPRISE_PREFS_KEY = 'antigravityUnifiedStateSync.enterprisePreferences'
+const KEYCHAIN_SERVICE = 'gemini'
+const KEYCHAIN_ACCOUNT = 'antigravity'
+const GO_KEYRING_PREFIX = 'go-keyring-base64:'
+const STANDALONE_TOKEN_FILE = 'jetski-standalone-oauth-token'
+
+export interface AntigravityOAuthTokens {
+  accessToken: string
+  expiresIn: number
+}
 
 export interface AntigravityIdeApplyResult {
   applied: boolean
@@ -201,9 +211,84 @@ async function injectEnterpriseProject(
   )
 }
 
+export function getAntigravityStandaloneTokenPath(): string {
+  return join(homedir(), '.gemini', STANDALONE_TOKEN_FILE)
+}
+
+/**
+ * Antigravity 2.x (hub `agy --app_data_dir=antigravity`) không còn đọc token
+ * từ state.vscdb. Token được lưu ở system keyring (service `gemini`, account
+ * `antigravity`) hoặc file standalone `~/.gemini/jetski-standalone-oauth-token`.
+ * Cả hai nơi đều dùng cùng một JSON token store.
+ */
+export function buildAntigravityTokenStorePayload(
+  entry: AntigravityAccountEntry,
+  tokens: AntigravityOAuthTokens,
+  now = Date.now()
+): string {
+  const email = entry.email?.trim()
+  if (!email) {
+    throw new Error('Tài khoản Antigravity thiếu email, không thể đồng bộ credential store')
+  }
+
+  const expiresIn = Math.max(Math.floor(tokens.expiresIn), 300)
+  return JSON.stringify({
+    token: {
+      access_token: tokens.accessToken,
+      token_type: 'Bearer',
+      refresh_token: entry.refreshToken,
+      expiry: new Date(now + expiresIn * 1000).toISOString(),
+      expires_in: expiresIn
+    },
+    auth_method: 'consumer',
+    id_token_email: email
+  })
+}
+
+export function buildAntigravityKeyringPassword(payload: string): string {
+  return `${GO_KEYRING_PREFIX}${Buffer.from(payload, 'utf8').toString('base64')}`
+}
+
+async function writeAntigravityStandaloneToken(payload: string): Promise<void> {
+  const tokenPath = getAntigravityStandaloneTokenPath()
+  await mkdir(dirname(tokenPath), { recursive: true })
+  await writeFile(tokenPath, payload, { mode: 0o600 })
+  await chmod(tokenPath, 0o600)
+}
+
+async function writeAntigravityKeychainToken(payload: string): Promise<void> {
+  if (process.platform !== 'darwin') {
+    return
+  }
+
+  await execFileAsync(
+    'security',
+    [
+      'add-generic-password',
+      '-U',
+      '-s',
+      KEYCHAIN_SERVICE,
+      '-a',
+      KEYCHAIN_ACCOUNT,
+      '-w',
+      buildAntigravityKeyringPassword(payload)
+    ],
+    { encoding: 'utf8' }
+  )
+}
+
+async function applyAntigravityTokenStore(
+  entry: AntigravityAccountEntry,
+  tokens: AntigravityOAuthTokens
+): Promise<void> {
+  const payload = buildAntigravityTokenStorePayload(entry, tokens)
+  await writeAntigravityStandaloneToken(payload)
+  await writeAntigravityKeychainToken(payload)
+}
+
 export async function applyAntigravityIdeAccount(
   entry: AntigravityAccountEntry,
-  tokens: { accessToken: string; expiresIn: number }
+  tokens: AntigravityOAuthTokens
 ): Promise<AntigravityIdeApplyResult> {
   if (!shouldApplyAntigravityIde()) {
     return {
@@ -245,17 +330,27 @@ export async function applyAntigravityIdeAccount(
     await quitAntigravityIde()
   }
 
-  await withDbLock(dbPath, async () => {
-    if (await fileExists(dbPath)) {
-      await backupDatabase(dbPath)
-    }
+  try {
+    await applyAntigravityTokenStore(entry, tokens)
 
-    const driver = await getSqliteDriver()
-    const expiry = Math.floor(Date.now() / 1000) + Math.max(tokens.expiresIn, 300)
-    await injectOAuthToken(driver, dbPath, tokens.accessToken, entry.refreshToken, expiry, email)
-    await injectEnterpriseProject(driver, dbPath, entry.projectId ?? entry.managedProjectId)
-    await driver.finalize(dbPath)
-  })
+    await withDbLock(dbPath, async () => {
+      if (await fileExists(dbPath)) {
+        await backupDatabase(dbPath)
+      }
+
+      const driver = await getSqliteDriver()
+      const expiry = Math.floor(Date.now() / 1000) + Math.max(tokens.expiresIn, 300)
+      await injectOAuthToken(driver, dbPath, tokens.accessToken, entry.refreshToken, expiry, email)
+      await injectEnterpriseProject(driver, dbPath, entry.projectId ?? entry.managedProjectId)
+      await driver.finalize(dbPath)
+    })
+  } catch (error) {
+    // IDE đã bị đóng trước khi ghi; mở lại để user không bị mất cửa sổ làm việc.
+    if (wasRunning) {
+      await openAntigravityIde().catch(() => undefined)
+    }
+    throw error
+  }
 
   let restarted = false
   if (wasRunning) {
