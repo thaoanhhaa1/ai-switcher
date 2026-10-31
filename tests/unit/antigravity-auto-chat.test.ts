@@ -6,6 +6,7 @@ import {
   getFamiliesWith100PercentWeeklyQuota,
   getNextWeeklyResetTimestamp,
   getWeeklyResetTimestamp,
+  isFamilyShortTermExhausted,
   isWeeklyQuotaDueForReset,
   isWeeklyQuota100Percent,
   isWeeklyWindow,
@@ -223,6 +224,70 @@ describe('antigravity-auto-chat', () => {
       expect(isWeeklyQuota100Percent(quota, 'claude')).toBe(true)
       expect(getFamiliesWith100PercentWeeklyQuota(quota)).toEqual(['gemini', 'claude'])
     })
+
+    it('returns false when 5h short-term window is exhausted, even if resetsAt is due', () => {
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: '5h', windowLabel: '5 giờ', usedPercent: 100, remainingPercent: 0, resetsAt: 1200 },
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 80, remainingPercent: 20, resetsAt: 1000 }
+          ]
+        }
+      ])
+
+      // now = 1050 (resetsAt 1000 is due, but 5h window is 0% remaining)
+      expect(isWeeklyQuotaDueForReset(quota, 'gemini', 1050)).toBe(false)
+      expect(getFamiliesDueForWeeklyReset(quota, 1050)).toEqual([])
+
+      // When checkShortTerm is disabled explicitly, it evaluates only weekly
+      expect(isWeeklyQuotaDueForReset(quota, 'gemini', 1050, { checkShortTerm: false })).toBe(true)
+    })
+  })
+
+  describe('isFamilyShortTermExhausted', () => {
+    it('returns true when all non-weekly windows are exhausted', () => {
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: '5h', windowLabel: '5 giờ', usedPercent: 100, remainingPercent: 0, resetsAt: 1200 },
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 10, remainingPercent: 90, resetsAt: 5000 }
+          ]
+        }
+      ])
+      expect(isFamilyShortTermExhausted(quota, 'gemini')).toBe(true)
+      expect(isFamilyShortTermExhausted(quota, 'claude')).toBe(false)
+    })
+
+    it('returns false when short-term window still has remaining percentage', () => {
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: '5h', windowLabel: '5 giờ', usedPercent: 60, remainingPercent: 40, resetsAt: 1200 },
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 10, remainingPercent: 90, resetsAt: 5000 }
+          ]
+        }
+      ])
+      expect(isFamilyShortTermExhausted(quota, 'gemini')).toBe(false)
+    })
+
+    it('returns false when model has no short-term windows', () => {
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 10, remainingPercent: 90, resetsAt: 5000 }
+          ]
+        }
+      ])
+      expect(isFamilyShortTermExhausted(quota, 'gemini')).toBe(false)
+    })
   })
 
   describe('getNextWeeklyResetTimestamp and calculateNextResetDelayMs', () => {
@@ -340,6 +405,92 @@ describe('antigravity-auto-chat', () => {
         message: '200 OK'
       })
       expect(lastTriggeredMap.get('acc-1:gemini')).toBe(1500000)
+    })
+
+    it('prevents infinite spam for unstarted cycle (resetsAt is null) using initialTriggeredSet', async () => {
+      const acc = makeAccount('acc-1', 'Account 1')
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 0, remainingPercent: 100, resetsAt: null }
+          ]
+        }
+      ])
+
+      const testChatFn = vi.fn().mockResolvedValue({ success: true, message: '200 OK' })
+      const initialTriggeredSet = new Set<string>()
+      const lastTriggeredMap = new Map<string, number>()
+
+      // First run: triggers and records into initialTriggeredSet
+      const res1 = await executeAutoTestChatForAccounts({
+        accounts: [acc],
+        quotas: { 'acc-1': quota },
+        testChatFn,
+        initialTriggeredSet,
+        lastTriggeredMap,
+        cooldownMs: 60000,
+        nowMs: 100000
+      })
+
+      expect(res1.triggeredCount).toBe(1)
+      expect(testChatFn).toHaveBeenCalledTimes(1)
+      expect(initialTriggeredSet.has('acc-1:gemini')).toBe(true)
+
+      // Second run even after cooldown expires: since resetsAt is still null and already triggered initially, do NOT trigger again
+      const res2 = await executeAutoTestChatForAccounts({
+        accounts: [acc],
+        quotas: { 'acc-1': quota },
+        testChatFn,
+        initialTriggeredSet,
+        lastTriggeredMap: new Map(), // clear cooldown to simulate time passed
+        cooldownMs: 60000,
+        nowMs: 200000
+      })
+
+      expect(res2.triggeredCount).toBe(0)
+      expect(testChatFn).toHaveBeenCalledTimes(1) // Still 1!
+    })
+
+    it('uses shorter errorCooldownMs on failure instead of full cooldown', async () => {
+      const acc = makeAccount('acc-1', 'Account 1')
+      const quota = makeQuota([
+        {
+          modelId: 'group-gemini',
+          label: 'Gemini Models',
+          windows: [
+            { windowId: 'weekly', windowLabel: '7 ngày', usedPercent: 50, remainingPercent: 50, resetsAt: 1000 }
+          ]
+        }
+      ])
+
+      const testChatFn = vi.fn().mockResolvedValue({ success: false, message: '500 Server Error' })
+      const lastTriggeredMap = new Map<string, number>()
+      const consecutiveErrorMap = new Map<string, number>()
+
+      const cooldownMs = 30 * 60 * 1000 // 30 min
+      const errorCooldownMs = 2 * 60 * 1000 // 2 min
+      const nowMs = 1500 * 1000 // 1,500,000 ms
+
+      await executeAutoTestChatForAccounts({
+        accounts: [acc],
+        quotas: { 'acc-1': quota },
+        testChatFn,
+        lastTriggeredMap,
+        consecutiveErrorMap,
+        cooldownMs,
+        errorCooldownMs,
+        nowMs
+      })
+
+      expect(consecutiveErrorMap.get('acc-1:gemini')).toBe(1)
+      // Check lastTriggeredMap value: should expire in exactly errorCooldownMs
+      const recorded = lastTriggeredMap.get('acc-1:gemini')!
+      // In 1 minute (60s), still within errorCooldownMs (2 min) -> blocked
+      expect(nowMs + 60000 - recorded < cooldownMs).toBe(true)
+      // In 2.1 minutes (126s) -> allowed!
+      expect(nowMs + 126000 - recorded < cooldownMs).toBe(false)
     })
   })
 })

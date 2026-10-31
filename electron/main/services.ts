@@ -63,6 +63,7 @@ import {
     fetchAntigravityQuota,
     getAntigravityConfigDirPath,
     getAntigravityLoginStatus,
+    getAntigravityModelOptions,
     importAntigravityFromFile,
     importAntigravityFromLive,
     readLiveAntigravityEmail,
@@ -85,7 +86,10 @@ import {
     startCopilotDeviceLogin,
     waitForCopilotDeviceLogin,
 } from './providers/github-copilot';
-import { isValidCopilotEntry, loadStoredCopilotAccount } from './copilot-auth-storage';
+import {
+    isValidCopilotEntry,
+    loadStoredCopilotAccount,
+} from './copilot-auth-storage';
 import { hasLiveCopilotAuth } from './copilot-ide';
 import {
     getAntigravityAccountsPath,
@@ -459,7 +463,11 @@ export async function getActiveStatusForProvider(
             ...(await getInactiveStatus('codex-chatgpt')),
             configExists,
             authExists,
-            authMode: isChatGptAuth(liveAuth) ? 'chatgpt' : authExists ? 'unknown' : undefined,
+            authMode: isChatGptAuth(liveAuth)
+                ? 'chatgpt'
+                : authExists
+                  ? 'unknown'
+                  : undefined,
         };
     }
 
@@ -503,7 +511,10 @@ export async function getActiveStatuses(
     const entries = await Promise.all(
         ALL_PROVIDERS.map(
             async (provider) =>
-                [provider, await getActiveStatusForProvider(appData, provider)] as const,
+                [
+                    provider,
+                    await getActiveStatusForProvider(appData, provider),
+                ] as const,
         ),
     );
 
@@ -594,9 +605,13 @@ export async function updateAccount(
     const configChanged =
         updated.apiKey !== existing.apiKey ||
         updated.settings.model !== existing.settings.model ||
-        updated.settings.modelReasoningEffort !== existing.settings.modelReasoningEffort;
+        updated.settings.modelReasoningEffort !==
+            existing.settings.modelReasoningEffort;
 
-    if (configChanged && getActiveAccountIdForProvider(data, updated.provider) === id) {
+    if (
+        configChanged &&
+        getActiveAccountIdForProvider(data, updated.provider) === id
+    ) {
         if (updated.provider === 'codex-freemodel') {
             await applyCodexFreeModelAccount(updated);
         } else if (updated.provider === 'codex-chatgpt') {
@@ -746,7 +761,8 @@ export async function validateApiKey(
     if (provider === 'github-copilot') {
         return {
             valid: false,
-            message: 'GitHub Copilot dùng OAuth qua VS Code/Cursor, không dùng API key',
+            message:
+                'GitHub Copilot dùng OAuth qua VS Code/Cursor, không dùng API key',
         };
     }
 
@@ -780,12 +796,9 @@ export async function getProviderOptions(
     }
 
     if (provider === 'antigravity') {
+        const dynamicModels = await getAntigravityModelOptions(accountId);
         return {
-            models: [
-                { id: 'claude-opus-4-5-thinking', ownedBy: 'anthropic' },
-                { id: 'gemini-3-pro', ownedBy: 'google' },
-                { id: 'gemini-3-flash', ownedBy: 'google' },
-            ],
+            models: dynamicModels,
             reasoningEfforts: [
                 { value: 'low', label: 'low' },
                 { value: 'medium', label: 'medium' },
@@ -845,9 +858,14 @@ export async function getAccountsQuota(
 
     const entries = await Promise.all(
         targets.map(async (account) => {
-            const quota = await getAccountQuota(account.provider, account.id).catch(
-                (error: unknown) => buildUnavailableQuota(
-                    error instanceof Error ? error.message : 'Không thể lấy quota',
+            const quota = await getAccountQuota(
+                account.provider,
+                account.id,
+            ).catch((error: unknown) =>
+                buildUnavailableQuota(
+                    error instanceof Error
+                        ? error.message
+                        : 'Không thể lấy quota',
                 ),
             );
             return [account.id, quota] as const;
@@ -949,7 +967,10 @@ export async function importChatGptFileAccount(
 ): Promise<ChatGptLoginStatus> {
     assertValidAccountId(accountId);
     const approvedFile = await consumeApprovedImportFile(filePath);
-    const auth = await importChatGptAuthFromFile(accountId, approvedFile.content);
+    const auth = await importChatGptAuthFromFile(
+        accountId,
+        approvedFile.content,
+    );
     const identity = parseChatGptIdentity(auth);
     await persistChatGptIdentity(accountId, identity);
     return getChatGptLoginStatus(accountId);
@@ -1004,7 +1025,10 @@ export async function importAntigravityFileAccount(
 ): Promise<AntigravityLoginStatus> {
     assertValidAccountId(accountId);
     const approvedFile = await consumeApprovedImportFile(filePath);
-    const status = await importAntigravityFromFile(accountId, approvedFile.content);
+    const status = await importAntigravityFromFile(
+        accountId,
+        approvedFile.content,
+    );
     await persistAntigravityIdentity(accountId, {
         email: status.email,
         projectId: status.projectId,
@@ -1061,7 +1085,9 @@ export async function startCopilotLogin(
     return startCopilotDeviceLogin(accountId);
 }
 
-export async function waitCopilotLogin(accountId: string): Promise<CopilotLoginStatus> {
+export async function waitCopilotLogin(
+    accountId: string,
+): Promise<CopilotLoginStatus> {
     const status = await waitForCopilotDeviceLogin(accountId);
     const data = await loadAppData();
     await appendUsageEvent(data, {
