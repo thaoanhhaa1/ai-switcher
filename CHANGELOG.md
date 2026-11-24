@@ -7,6 +7,23 @@ và dự án tuân thủ theo [Semantic Versioning](https://semver.org/spec/v2.0
 
 ---
 
+## [0.2.1] - 2026-11-24
+
+### Fixed
+- **Tự động kích hoạt Reset Quota Tuần (Auto Test Chat)**:
+  - **Kích hoạt vô điều kiện khi quota đạt 100% (Unconditional 100% trigger)**: Loại bỏ ràng buộc phải có `weeklyResetAt`, cho phép tự động gửi chat thử nghiệm kích hoạt chu kỳ mới ngay khi quota tuần đạt 100% (`hasWeeklyQuota100Percent`).
+  - **Bổ sung TTL và dọn dẹp `initialTriggeredSet`**: Thiết lập thời gian sống (TTL) 24 giờ (`DEFAULT_AUTO_TEST_CHAT_UNSTARTED_TTL_MS`) cho các bản ghi chu kỳ chưa kích hoạt nhằm tránh tình trạng chặn vĩnh viễn; tự động dọn dẹp `initialTriggeredSet` khi người dùng bật/tắt (toggle) tính năng Auto Test Chat.
+  - **Cơ chế Error Cooldown Backoff**: Cải thiện thời gian thử lại linh hoạt (`DEFAULT_AUTO_TEST_CHAT_ERROR_RETRY_MS` 30 giây, `DEFAULT_AUTO_TEST_CHAT_PENDING_RESET_INTERVAL_MS` 30 giây) khi gặp lỗi mạng/API hoặc khi tài khoản đã đến hạn nhưng quota chưa hồi phục về 100%.
+  - **Fallback retry các candidate models động trong `testAntigravityChat`**: Khi gửi chat thử nghiệm gặp lỗi ở một model hoặc base endpoint (thay vì chỉ 404), hàm sẽ tiếp tục thử tuần tự các candidate models và base URL khả dụng kế tiếp thay vì dừng lại ngay lập tức.
+  - **Tổ chức lại kiến trúc với `AutoTestChatJob`**: Đóng gói luồng kiểm tra định kỳ vào class `AutoTestChatJob` độc lập, hỗ trợ trigger tức thì và quản lý timer chặt chẽ, tối ưu hiệu năng và độ ổn định.
+
+### Added
+- **Độ phủ kiểm thử tự động (Unit Test Coverage)**:
+  - Bổ sung các test suite toàn diện trong `tests/unit/antigravity-auto-chat.test.ts` kiểm thử kích hoạt quota 100% không cần `weeklyResetAt`, TTL của `initialTriggeredSet`, reset state khi toggle, và quản lý chu kỳ chạy của `AutoTestChatJob`.
+  - Mở rộng test case trong `tests/unit/antigravity-provider.test.ts` cho cơ chế fallback thử lại nhiều candidate models trong `testAntigravityChat`.
+
+---
+
 ## [0.2.0] - 2026-10-31
 
 ### Added

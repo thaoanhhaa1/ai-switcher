@@ -17,6 +17,7 @@ Hiện hỗ trợ:
 - Chuyển tài khoản active chỉ với một click
 - Tự động ghi `~/.codex/`, `~/.config/opencode/antigravity-accounts.json`, Antigravity IDE `state.vscdb`, và VS Code `state.vscdb` (Copilot)
 - Theo dõi quota theo từng tài khoản
+- Tự động gửi chat thử nghiệm (Auto Test Chat) kích hoạt chu kỳ hạn mức tuần mới cho Antigravity khi quota đạt 100% hoặc đến hạn reset
 - Đăng nhập FreeModel qua OTP, ChatGPT qua `codex login`, Antigravity qua `opencode auth login`
 - Import auth từ file hoặc config live
 
@@ -227,7 +228,7 @@ File cài đặt sẽ nằm trong thư mục `release/`.
 
 - **FreeModel**: cần đăng nhập dashboard (OTP). API key alone không đủ quyền đọc quota.
 - **ChatGPT**: auth OAuth hợp lệ, quota theo %
-- **Antigravity**: theo từng model (Claude, Gemini...) với cửa sổ 5h / 7 ngày, % đã dùng + thời gian reset
+- **Antigravity**: theo từng model (Claude, Gemini...) với cửa sổ 5h / 7 ngày, % đã dùng + thời gian reset; hỗ trợ tự động kích hoạt chu kỳ mới (Auto Test Chat) khi quota đạt 100% hoặc đến hạn reset
 - **GitHub Copilot**: premium requests theo % (GitHub Copilot usage API). Dùng token riêng của slot nếu đã đăng nhập device flow; fallback token máy (`gh` CLI) kèm cảnh báo nếu lệch account
 
 ## Chạy test
