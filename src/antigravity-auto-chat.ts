@@ -3,6 +3,9 @@ import type { Account, AccountQuota, ModelQuotaWindow } from './types';
 export const DEFAULT_AUTO_TEST_CHAT_COOLDOWN_MS = 30 * 60 * 1000; // 30 phút cooldown tránh gửi lặp lại
 export const DEFAULT_AUTO_TEST_CHAT_ERROR_COOLDOWN_MS = 2 * 60 * 1000; // 2 phút cooldown thử lại khi gặp lỗi
 export const DEFAULT_AUTO_TEST_CHAT_INTERVAL_MS = 15 * 60 * 1000; // 15 phút kiểm tra ngầm định kỳ
+export const DEFAULT_AUTO_TEST_CHAT_PENDING_RESET_INTERVAL_MS = 30 * 1000; // 30 giây kiểm tra lại khi tài khoản đã đến hạn reset nhưng quota chưa về 100%
+export const DEFAULT_AUTO_TEST_CHAT_ERROR_RETRY_MS = 30 * 1000; // 30 giây thử lại khi gặp lỗi mạng/API
+export const DEFAULT_AUTO_TEST_CHAT_UNSTARTED_TTL_MS = 24 * 60 * 60 * 1000; // 24 giờ TTL cho chu kỳ chưa kích hoạt (tránh chặn vĩnh viễn)
 export const AUTO_TEST_CHAT_STORAGE_KEY =
     'ai-switcher:antigravity-auto-test-chat';
 export const AUTO_TEST_CHAT_LAST_TRIGGERED_KEY =
@@ -138,12 +141,11 @@ export function isFamilyShortTermExhausted(
 
     for (const model of matchingModels) {
         const shortWindows = (model.windows ?? []).filter(
-            (w) => !isWeeklyWindow(w),
+            (w) => !w.disabled && !isWeeklyWindow(w),
         );
         if (shortWindows.length > 0) {
             const allExhausted = shortWindows.every(
                 (w) =>
-                    w.disabled ||
                     (typeof w.remainingPercent === 'number' &&
                         w.remainingPercent <= 0) ||
                     (typeof w.usedPercent === 'number' && w.usedPercent >= 100),
@@ -158,29 +160,13 @@ export function isFamilyShortTermExhausted(
 }
 
 /**
- * Kiểm tra xem quota tuần của nhóm Gemini hoặc Claude & GPT của một tài khoản đã đến lúc reset (cần gửi chat thử nghiệm) hay chưa.
- *
- * Quy tắc dựa vào thời gian reset tuần:
- * 1. Kiểm tra an toàn: Nếu cửa sổ ngắn hạn (5h) đang cạn kiệt (0%), không kích hoạt để tránh lỗi 429.
- * 2. Nếu nhóm ĐÃ CÓ thời gian reset tuần (resetsAt):
- *    - nowSeconds >= resetsAt: Đã đến hoặc qua thời gian reset tuần -> cần gửi chat thử nghiệm để kích hoạt chu kỳ mới.
- *    - nowSeconds < resetsAt: Chưa đến thời gian reset tuần (chu kỳ hiện tại vẫn đang đếm ngược) -> KHÔNG gửi lại.
- * 3. Nếu nhóm CHƯA CÓ thời gian reset tuần (resetsAt === null / undefined):
- *    - Kiểm tra nếu quota tuần đang ở mức 100% (chưa kích hoạt chu kỳ lần nào) -> cần gửi chat thử nghiệm để kích hoạt chu kỳ 7 ngày.
+ * Kiểm tra xem nhóm model (gemini | claude) có cửa sổ quota tuần đang đạt 100% hay không.
  */
-export function isWeeklyQuotaDueForReset(
+export function hasWeeklyQuota100Percent(
     quota: AccountQuota | undefined | null,
     family: 'gemini' | 'claude',
-    nowSeconds: number = Math.floor(Date.now() / 1000),
-    options: { checkShortTerm?: boolean } = {},
 ): boolean {
-    const { checkShortTerm = true } = options;
     if (!quota?.models?.length) {
-        return false;
-    }
-
-    // 1. Kiểm tra an toàn: Nếu cửa sổ ngắn hạn (5h) đang cạn kiệt, tạm hoãn gửi chat
-    if (checkShortTerm && isFamilyShortTermExhausted(quota, family)) {
         return false;
     }
 
@@ -195,14 +181,6 @@ export function isWeeklyQuotaDueForReset(
         return false;
     }
 
-    const weeklyResetAt = getWeeklyResetTimestamp(quota, family);
-
-    // 2. Đã có thời gian reset tuần: căn cứ trực tiếp vào mốc thời gian reset tuần
-    if (typeof weeklyResetAt === 'number') {
-        return nowSeconds >= weeklyResetAt;
-    }
-
-    // 3. Chưa có thời gian reset tuần: căn cứ vào mức quota 100% (chưa kích hoạt chu kỳ)
     for (const model of matchingModels) {
         const weeklyWindows = (model.windows ?? []).filter(
             (w) => !w.disabled && isWeeklyWindow(w),
@@ -232,6 +210,44 @@ export function isWeeklyQuotaDueForReset(
     }
 
     return false;
+}
+
+/**
+ * Kiểm tra xem quota tuần của nhóm Gemini hoặc Claude & GPT của một tài khoản đã đến lúc reset (cần gửi chat thử nghiệm) hay chưa.
+ *
+ * Quy tắc:
+ * 1. Kiểm tra an toàn: Nếu cửa sổ ngắn hạn (5h) đang cạn kiệt (0%), không kích hoạt để tránh lỗi 429.
+ * 2. Quota tuần bắt buộc phải đang đạt 100% (chưa kích hoạt chu kỳ hoặc Google đã reset xong 100%).
+ * 3. Nếu nhóm ĐÃ CÓ thời gian reset tuần (resetsAt):
+ *    - nowSeconds >= resetsAt VÀ quota tuần đạt 100%: Đã đến hoặc qua thời gian reset tuần và quota đã khôi phục -> gửi chat thử nghiệm để kích hoạt chu kỳ mới.
+ *    - nowSeconds < resetsAt: Chưa đến thời gian reset tuần (chu kỳ hiện tại vẫn đang đếm ngược) -> KHÔNG gửi lại.
+ * 4. Nếu nhóm CHƯA CÓ thời gian reset tuần (resetsAt === null / undefined):
+ *    - Do quota tuần đạt 100% (chưa kích hoạt chu kỳ lần nào) -> gửi chat thử nghiệm để kích hoạt chu kỳ 7 ngày ban đầu.
+ */
+export function isWeeklyQuotaDueForReset(
+    quota: AccountQuota | undefined | null,
+    family: 'gemini' | 'claude',
+    nowSeconds: number = Math.floor(Date.now() / 1000),
+    options: { checkShortTerm?: boolean } = {},
+): boolean {
+    const { checkShortTerm = true } = options;
+    if (!quota?.models?.length) {
+        return false;
+    }
+
+    // 1. Kiểm tra an toàn: Nếu cửa sổ ngắn hạn (5h) đang cạn kiệt, tạm hoãn gửi chat
+    if (checkShortTerm && isFamilyShortTermExhausted(quota, family)) {
+        return false;
+    }
+
+    // 2. Quota tuần bắt buộc phải đang đạt 100%
+    if (!hasWeeklyQuota100Percent(quota, family)) {
+        return false;
+    }
+
+    // 3. Khi quota tuần đang ở mức tối đa 100% (chưa kích hoạt chu kỳ hoặc vừa được reset về 100%),
+    // luôn đủ điều kiện gửi chat thử nghiệm để kích hoạt chu kỳ 7 ngày mới (chuyển sang 99% và đếm ngược)
+    return true;
 }
 
 /**
@@ -268,6 +284,33 @@ export function getFamiliesDueForWeeklyReset(
  */
 export const getFamiliesWith100PercentWeeklyQuota =
     getFamiliesDueForWeeklyReset;
+
+/**
+ * Kiểm tra xem có tài khoản nào đã đến hoặc qua mốc reset tuần nhưng quota tuần chưa về 100% hay không.
+ * Nếu có, cần kiểm tra với tần suất dày hơn (mặc định 30 giây) để phát hiện thời điểm quota vừa được cập nhật 100%.
+ */
+export function hasAccountsPendingWeeklyReset(
+    accounts: Account[],
+    quotas: Record<string, AccountQuota>,
+    nowSeconds: number = Math.floor(Date.now() / 1000),
+): boolean {
+    const agAccounts = accounts.filter((acc) => acc.provider === 'antigravity');
+    for (const acc of agAccounts) {
+        const quota = quotas[acc.id];
+        if (!quota) continue;
+        for (const family of ['gemini', 'claude'] as const) {
+            const resetAt = getWeeklyResetTimestamp(quota, family);
+            if (
+                typeof resetAt === 'number' &&
+                resetAt <= nowSeconds &&
+                !hasWeeklyQuota100Percent(quota, family)
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 /**
  * Lấy mốc thời gian reset tuần gần nhất trong tương lai của các tài khoản Antigravity (tính bằng giây).
@@ -313,6 +356,7 @@ export function calculateNextResetDelayMs(
         bufferSeconds?: number;
         maxIntervalMs?: number;
         minDelayMs?: number;
+        pendingResetIntervalMs?: number;
     } = {},
 ): number {
     const {
@@ -320,7 +364,16 @@ export function calculateNextResetDelayMs(
         bufferSeconds = 5,
         maxIntervalMs = DEFAULT_AUTO_TEST_CHAT_INTERVAL_MS,
         minDelayMs = 5000,
+        pendingResetIntervalMs = DEFAULT_AUTO_TEST_CHAT_PENDING_RESET_INTERVAL_MS,
     } = options;
+
+    // Nếu có tài khoản đã đến mốc reset tuần nhưng quota chưa về 100%, chờ theo pendingResetIntervalMs (30s)
+    if (hasAccountsPendingWeeklyReset(accounts, quotas, nowSeconds)) {
+        return Math.min(
+            maxIntervalMs,
+            Math.max(minDelayMs, pendingResetIntervalMs),
+        );
+    }
 
     const nextReset = getNextWeeklyResetTimestamp(accounts, quotas, nowSeconds);
     if (nextReset === null) {
@@ -404,13 +457,6 @@ export async function executeAutoTestChatForAccounts({
                 continue;
             }
 
-            const weeklyResetAt = getWeeklyResetTimestamp(quota, family);
-
-            // Nếu nhóm chưa có mốc resetsAt và đã từng được kích hoạt chu kỳ ban đầu, bỏ qua để tránh lặp vô hạn
-            if (weeklyResetAt === null && initialTriggeredSet.has(key)) {
-                continue;
-            }
-
             const lastTriggered = lastTriggeredMap.get(key);
             if (
                 lastTriggered !== undefined &&
@@ -426,12 +472,7 @@ export async function executeAutoTestChatForAccounts({
                 if (response.success) {
                     lastTriggeredMap.set(key, nowMs);
                     consecutiveErrorMap.delete(key);
-
-                    if (weeklyResetAt === null) {
-                        initialTriggeredSet.add(key);
-                    } else {
-                        initialTriggeredSet.delete(key);
-                    }
+                    initialTriggeredSet.delete(key);
                 } else {
                     const errCount = (consecutiveErrorMap.get(key) ?? 0) + 1;
                     consecutiveErrorMap.set(key, errCount);
@@ -482,4 +523,158 @@ export async function executeAutoTestChatForAccounts({
         triggeredCount: results.length,
         results,
     };
+}
+
+export interface AutoTestChatJobOptions {
+    getAccounts: () => Account[];
+    getQuotas: () => Record<string, AccountQuota>;
+    fetchQuotas: (accountIds: string[]) => Promise<Record<string, AccountQuota>>;
+    testChatFn: (
+        accountId: string,
+        family: 'gemini' | 'claude',
+    ) => Promise<{ success: boolean; message?: string }>;
+    onResults?: (results: AutoTestChatTriggerResult[]) => void;
+    onSuccess?: (accountId: string, family: 'gemini' | 'claude') => void;
+    lastTriggeredMap?: Map<string, number>;
+    initialTriggeredSet?: Set<string>;
+    consecutiveErrorMap?: Map<string, number>;
+    inFlightSet?: Set<string>;
+    cooldownMs?: number;
+    errorCooldownMs?: number;
+    maxConsecutiveErrors?: number;
+    checkShortTerm?: boolean;
+    errorRetryDelayMs?: number;
+    pendingResetIntervalMs?: number;
+    maxIntervalMs?: number;
+    minDelayMs?: number;
+    onStateSaved?: () => void;
+    logger?: {
+        info?: (...args: any[]) => void;
+        error?: (...args: any[]) => void;
+    };
+}
+
+/**
+ * Job lặp lại định kỳ tự động kiểm tra và gửi tin nhắn chat thử nghiệm ("Say ok") cho các tài khoản Antigravity
+ * khi mốc reset tuần đã đến (nowSeconds >= resetsAt) VÀ quota tuần đạt 100%, hoặc khi tài khoản chưa kích hoạt chu kỳ có quota 100%.
+ */
+export class AutoTestChatJob {
+    private options: AutoTestChatJobOptions;
+    private timer: ReturnType<typeof setTimeout> | null = null;
+    private isRunning = false;
+    private isExecuting = false;
+
+    constructor(options: AutoTestChatJobOptions) {
+        this.options = options;
+    }
+
+    public start(): void {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        void this.runStep();
+    }
+
+    public stop(): void {
+        this.isRunning = false;
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+    }
+
+    public get active(): boolean {
+        return this.isRunning;
+    }
+
+    /**
+     * Kích hoạt kiểm tra ngay lập tức ngoài chu kỳ định kỳ.
+     */
+    public async triggerNow(): Promise<void> {
+        if (!this.isRunning) return;
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        await this.runStep();
+    }
+
+    private async runStep(): Promise<void> {
+        if (!this.isRunning || this.isExecuting) return;
+        this.isExecuting = true;
+
+        let delayMs =
+            this.options.maxIntervalMs ?? DEFAULT_AUTO_TEST_CHAT_INTERVAL_MS;
+
+        try {
+            const allAccounts = this.options.getAccounts();
+            const agAccounts = allAccounts.filter(
+                (acc) => acc.provider === 'antigravity',
+            );
+
+            if (agAccounts.length > 0) {
+                let currentQuotas = this.options.getQuotas();
+                try {
+                    const fetchedQuotas = await this.options.fetchQuotas(
+                        agAccounts.map((a) => a.id),
+                    );
+                    currentQuotas = { ...currentQuotas, ...fetchedQuotas };
+                } catch (fetchErr) {
+                    this.options.logger?.error?.(
+                        'Lỗi fetch quota trong job auto test chat:',
+                        fetchErr,
+                    );
+                    delayMs =
+                        this.options.errorRetryDelayMs ??
+                        DEFAULT_AUTO_TEST_CHAT_ERROR_RETRY_MS;
+                    return;
+                }
+
+                const { results } = await executeAutoTestChatForAccounts({
+                    accounts: agAccounts,
+                    quotas: currentQuotas,
+                    testChatFn: this.options.testChatFn,
+                    lastTriggeredMap: this.options.lastTriggeredMap,
+                    initialTriggeredSet: this.options.initialTriggeredSet,
+                    consecutiveErrorMap: this.options.consecutiveErrorMap,
+                    inFlightSet: this.options.inFlightSet,
+                    cooldownMs: this.options.cooldownMs,
+                    errorCooldownMs: this.options.errorCooldownMs,
+                    maxConsecutiveErrors: this.options.maxConsecutiveErrors,
+                    checkShortTerm: this.options.checkShortTerm,
+                });
+
+                this.options.onStateSaved?.();
+
+                if (results.length > 0) {
+                    this.options.onResults?.(results);
+                    for (const res of results) {
+                        if (res.success) {
+                            this.options.onSuccess?.(res.accountId, res.family);
+                        }
+                    }
+                }
+
+                delayMs = calculateNextResetDelayMs(agAccounts, currentQuotas, {
+                    maxIntervalMs: this.options.maxIntervalMs,
+                    minDelayMs: this.options.minDelayMs,
+                    pendingResetIntervalMs: this.options.pendingResetIntervalMs,
+                });
+            } else {
+                // Khi chưa có accounts (ví dụ lúc app vừa khởi động), thử lại sau 5s thay vì chờ hết maxIntervalMs
+                delayMs = this.options.minDelayMs ?? 5000;
+            }
+        } catch (err) {
+            this.options.logger?.error?.('Lỗi trong job auto test chat:', err);
+            delayMs =
+                this.options.errorRetryDelayMs ??
+                DEFAULT_AUTO_TEST_CHAT_ERROR_RETRY_MS;
+        } finally {
+            this.isExecuting = false;
+            if (this.isRunning) {
+                this.timer = setTimeout(() => {
+                    void this.runStep();
+                }, delayMs);
+            }
+        }
+    }
 }

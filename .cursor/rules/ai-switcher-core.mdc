@@ -1,0 +1,8 @@
+---
+description: ai-switcher — repo core (pointer to AGENTS.md, language, repo-wide notes)
+alwaysApply: true
+---
+
+- Đọc `AGENTS.md` ở root trước khi sửa code; bám **Reference sibling** trong đó.
+- Luôn trao đổi với chủ repo bằng tiếng Việt; code, identifier, commit message bằng tiếng Anh.
+- Không commit/push nếu chủ repo chưa yêu cầu; không đọc file secret (`.env`, keystore, `local.properties`).

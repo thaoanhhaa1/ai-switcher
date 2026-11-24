@@ -3,6 +3,9 @@ import {
     AUTO_TEST_CHAT_INITIAL_TRIGGERED_KEY,
     AUTO_TEST_CHAT_LAST_TRIGGERED_KEY,
     AUTO_TEST_CHAT_STORAGE_KEY,
+    DEFAULT_AUTO_TEST_CHAT_UNSTARTED_TTL_MS,
+    AutoTestChatJob,
+    type AutoTestChatTriggerResult,
     calculateNextResetDelayMs,
     executeAutoTestChatForAccounts,
 } from './antigravity-auto-chat';
@@ -159,8 +162,27 @@ export default function App() {
                 AUTO_TEST_CHAT_INITIAL_TRIGGERED_KEY,
             );
             if (raw) {
-                const arr = JSON.parse(raw);
-                if (Array.isArray(arr)) return new Set(arr);
+                const parsed = JSON.parse(raw);
+                // Nếu là định dạng cũ (mảng string[] không có timestamp), xóa để giải phóng các tài khoản bị kẹt
+                if (Array.isArray(parsed)) {
+                    localStorage.removeItem(
+                        AUTO_TEST_CHAT_INITIAL_TRIGGERED_KEY,
+                    );
+                    return new Set();
+                }
+                if (parsed && typeof parsed === 'object') {
+                    const now = Date.now();
+                    const validKeys = new Set<string>();
+                    for (const [k, ts] of Object.entries(parsed)) {
+                        if (
+                            typeof ts === 'number' &&
+                            now - ts < DEFAULT_AUTO_TEST_CHAT_UNSTARTED_TTL_MS
+                        ) {
+                            validKeys.add(k);
+                        }
+                    }
+                    return validKeys;
+                }
             }
         } catch {
             // ignore
@@ -170,9 +192,14 @@ export default function App() {
 
     function saveInitialTriggeredSet(set: Set<string>): void {
         try {
+            const now = Date.now();
+            const obj: Record<string, number> = {};
+            set.forEach((key) => {
+                obj[key] = now;
+            });
             localStorage.setItem(
                 AUTO_TEST_CHAT_INITIAL_TRIGGERED_KEY,
-                JSON.stringify(Array.from(set)),
+                JSON.stringify(obj),
             );
         } catch {
             // ignore
@@ -238,6 +265,50 @@ export default function App() {
     );
     const autoChatConsecutiveErrorsRef = useRef<Map<string, number>>(new Map());
     const autoChatInFlightRef = useRef<Set<string>>(new Set());
+    const autoChatJobRef = useRef<AutoTestChatJob | null>(null);
+
+    const quotasRef = useRef(quotas);
+    quotasRef.current = quotas;
+
+    const accountsRef = useRef(data?.accounts);
+    accountsRef.current = data?.accounts;
+
+    const displayAutoChatNotification = (
+        results: AutoTestChatTriggerResult[],
+    ) => {
+        if (!results.length) return;
+        const successes = results.filter((r) => r.success);
+        const fails = results.filter((r) => !r.success);
+
+        if (results.length === 1) {
+            const res = results[0];
+            const familyLabel =
+                res.family === 'gemini'
+                    ? 'Gemini Models'
+                    : 'Claude and GPT models';
+            if (res.success) {
+                setAutoChatNotification({
+                    type: 'success',
+                    text: `Đã tự động gửi chat thử nghiệm ("Say ok") cho tài khoản "${res.accountName}" (${familyLabel}) để kích hoạt chu kỳ 7 ngày.`,
+                });
+            } else {
+                setAutoChatNotification({
+                    type: 'error',
+                    text: `Tự động gửi chat thử nghiệm thất bại cho "${res.accountName}" (${familyLabel}): ${res.message || 'Lỗi không xác định'}`,
+                });
+            }
+        } else if (fails.length === 0) {
+            setAutoChatNotification({
+                type: 'success',
+                text: `Đã tự động gửi chat thử nghiệm thành công cho ${successes.length} tài khoản (${successes.map((s) => s.accountName).join(', ')}) để kích hoạt chu kỳ 7 ngày.`,
+            });
+        } else {
+            setAutoChatNotification({
+                type: 'info',
+                text: `Tự động kích hoạt chu kỳ tuần: thành công ${successes.length} tài khoản, thất bại ${fails.length} tài khoản.`,
+            });
+        }
+    };
 
     const runAutoTestChatCheck = async (
         accountsToProcess: Account[],
@@ -260,39 +331,10 @@ export default function App() {
         saveInitialTriggeredSet(autoChatInitialTriggeredRef.current);
 
         if (results.length > 0) {
-            const successes = results.filter((r) => r.success);
-            const fails = results.filter((r) => !r.success);
-
-            if (results.length === 1) {
-                const res = results[0];
-                const familyLabel =
-                    res.family === 'gemini'
-                        ? 'Gemini Models'
-                        : 'Claude and GPT models';
-                if (res.success) {
-                    setAutoChatNotification({
-                        type: 'success',
-                        text: `Đã tự động gửi chat thử nghiệm ("Say ok") cho tài khoản "${res.accountName}" (${familyLabel}) để kích hoạt chu kỳ 7 ngày.`,
-                    });
-                } else {
-                    setAutoChatNotification({
-                        type: 'error',
-                        text: `Tự động gửi chat thử nghiệm thất bại cho "${res.accountName}" (${familyLabel}): ${res.message || 'Lỗi không xác định'}`,
-                    });
-                }
-            } else if (fails.length === 0) {
-                setAutoChatNotification({
-                    type: 'success',
-                    text: `Đã tự động gửi chat thử nghiệm thành công cho ${successes.length} tài khoản (${successes.map((s) => s.accountName).join(', ')}) để kích hoạt chu kỳ 7 ngày.`,
-                });
-            } else {
-                setAutoChatNotification({
-                    type: 'info',
-                    text: `Tự động kích hoạt chu kỳ tuần: thành công ${successes.length} tài khoản, thất bại ${fails.length} tài khoản.`,
-                });
-            }
+            displayAutoChatNotification(results);
 
             // Đợi 3.5 giây để server Google cập nhật quota trước khi refresh lại
+            const successes = results.filter((r) => r.success);
             if (successes.length > 0) {
                 setTimeout(() => {
                     for (const s of successes) {
@@ -318,8 +360,29 @@ export default function App() {
         } catch {
             // ignore
         }
-        if (enabled && data?.accounts) {
-            void runAutoTestChatCheck(data.accounts, quotas);
+
+        if (enabled) {
+            // Khi người dùng chủ động bật lại tính năng Auto gửi:
+            // 1. Reset initialTriggeredSet và clear storage để lập tức quét và kích hoạt cho các tài khoản đang 100%
+            autoChatInitialTriggeredRef.current.clear();
+            try {
+                localStorage.removeItem(AUTO_TEST_CHAT_INITIAL_TRIGGERED_KEY);
+            } catch {
+                // ignore
+            }
+
+            // 2. Kích hoạt quét và gửi ngay lập tức cho các tài khoản Antigravity đang có quota 100%
+            const agAccounts = (data?.accounts ?? []).filter(
+                (a) => a.provider === 'antigravity',
+            );
+            if (agAccounts.length > 0) {
+                void runAutoTestChatCheck(agAccounts, quotas);
+            }
+
+            // 3. Nếu job đang chạy, yêu cầu job trigger ngay
+            if (autoChatJobRef.current) {
+                void autoChatJobRef.current.triggerNow();
+            }
         }
     }
 
@@ -331,37 +394,58 @@ export default function App() {
         return () => clearTimeout(timer);
     }, [autoChatNotification]);
 
+    // Job lặp lại định kỳ: tự động kiểm tra và gửi chat thử nghiệm khi thỏa điều kiện
     useEffect(() => {
-        if (!autoTestChatEnabled) return;
+        if (!autoTestChatEnabled) {
+            if (autoChatJobRef.current) {
+                autoChatJobRef.current.stop();
+                autoChatJobRef.current = null;
+            }
+            return;
+        }
 
-        const agAccounts =
-            data?.accounts.filter(
-                (account) => account.provider === 'antigravity',
-            ) ?? [];
-        if (!agAccounts.length) return;
-
-        // Tự động tính thời gian chờ tối ưu dựa trên mốc reset tuần gần nhất của các tài khoản
-        const delayMs = calculateNextResetDelayMs(agAccounts, quotas);
-
-        const timerId = setTimeout(() => {
-            window.api
-                .getAccountsQuota(agAccounts.map((account) => account.id))
-                .then((nextQuotas) => {
-                    setQuotas((prev) => ({ ...prev, ...nextQuotas }));
-                    return runAutoTestChatCheck(agAccounts, nextQuotas);
-                })
-                .catch((err) => {
-                    console.error(
-                        'Lỗi kiểm tra định kỳ Antigravity auto test chat:',
-                        err,
+        const job = new AutoTestChatJob({
+            getAccounts: () => accountsRef.current ?? [],
+            getQuotas: () => quotasRef.current,
+            fetchQuotas: async (accountIds) => {
+                const next = await window.api.getAccountsQuota(accountIds);
+                setQuotas((prev) => ({ ...prev, ...next }));
+                return next;
+            },
+            testChatFn: (accountId, family) =>
+                window.api.testAntigravityChat(accountId, family),
+            onResults: (results) => {
+                displayAutoChatNotification(results);
+            },
+            onSuccess: (accountId) => {
+                setTimeout(() => {
+                    const acc = (accountsRef.current ?? []).find(
+                        (a) => a.id === accountId,
                     );
-                });
-        }, delayMs);
+                    if (acc) {
+                        void refreshAccountQuota(acc);
+                    }
+                }, 3500);
+            },
+            lastTriggeredMap: autoChatLastTriggeredRef.current,
+            initialTriggeredSet: autoChatInitialTriggeredRef.current,
+            consecutiveErrorMap: autoChatConsecutiveErrorsRef.current,
+            inFlightSet: autoChatInFlightRef.current,
+            onStateSaved: () => {
+                saveLastTriggeredMap(autoChatLastTriggeredRef.current);
+                saveInitialTriggeredSet(autoChatInitialTriggeredRef.current);
+            },
+            logger: console,
+        });
+
+        autoChatJobRef.current = job;
+        job.start();
 
         return () => {
-            clearTimeout(timerId);
+            job.stop();
+            autoChatJobRef.current = null;
         };
-    }, [autoTestChatEnabled, data?.accounts, quotas]);
+    }, [autoTestChatEnabled]);
 
     const displayedAccounts = useMemo(() => {
         if (selectedProviderId === 'antigravity') {
@@ -1250,7 +1334,7 @@ export default function App() {
                                                         !autoTestChatEnabled,
                                                     )
                                                 }
-                                                title="Tự động gửi chat thử nghiệm ('Say ok') cho nhóm Gemini và Claude & GPT khi đến thời gian reset tuần hoặc quota tuần đạt 100% để kích hoạt chu kỳ 7 ngày mới (bảo vệ hạn mức 5h, chống spam và tự động thử lại khi lỗi)"
+                                                title="Tự động gửi chat thử nghiệm ('Say ok') cho nhóm Gemini và Claude & GPT khi đến thời gian reset tuần (resetsAt) VÀ quota tuần đạt 100%, hoặc khi tài khoản chưa kích hoạt chu kỳ có quota tuần 100%, để kích hoạt chu kỳ 7 ngày mới (bảo vệ hạn mức 5h, chống spam và tự động lặp lại)"
                                                 role='checkbox'
                                                 aria-checked={
                                                     autoTestChatEnabled

@@ -889,15 +889,8 @@ export async function testAntigravityChat(
                     }
                     lastErrorMsg = errorText || `HTTP ${response.status}`;
 
-                    if (response.status === 404) {
-                        continue;
-                    }
-
-                    return {
-                        success: false,
-                        status: response.status,
-                        message: lastErrorMsg,
-                    };
+                    // Nếu gặp lỗi ở model/base này, tiếp tục thử model hoặc base kế tiếp trong danh sách candidate
+                    continue;
                 } catch (fetchErr) {
                     lastErrorMsg =
                         fetchErr instanceof Error

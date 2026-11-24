@@ -463,6 +463,39 @@ describe('testAntigravityChat', () => {
         expect(testedModels[1]).toBe('gemini-3.8-flash-tiered');
     });
 
+    it('thử endpoint và model kế tiếp nếu gặp lỗi 403 ở base đầu tiên', async () => {
+        vi.mocked(loadStoredAntigravityAccount).mockResolvedValue(storedEntry);
+        const attemptedUrls: string[] = [];
+        setupFetch((url, body: any) => {
+            const which = route(url);
+            if (which === 'token')
+                return jsonResponse({
+                    access_token: 'valid-token',
+                    expires_in: 3600,
+                });
+            if (which === 'projectId')
+                return jsonResponse({ cloudaicompanionProject: 'p1' });
+            if (url.includes('generateContent')) {
+                attemptedUrls.push(url);
+                // Base daily đầu tiên trả về 403
+                if (url.includes('daily-cloudcode-pa.googleapis.com')) {
+                    return jsonResponse(
+                        { error: { message: 'Permission denied' } },
+                        403,
+                    );
+                }
+                return jsonResponse({
+                    candidates: [{ content: { parts: [{ text: 'ok' }] } }],
+                });
+            }
+            throw new Error(`unexpected call: ${url}`);
+        });
+
+        const result = await testAntigravityChat('acct-1', 'gemini');
+        expect(result.success).toBe(true);
+        expect(attemptedUrls.some((u) => u.includes('sandbox') || u.includes('cloudcode-pa.googleapis.com'))).toBe(true);
+    });
+
     it('ưu tiên model do người dùng cấu hình trong account settings', async () => {
         vi.mocked(loadStoredAntigravityAccount).mockResolvedValue(storedEntry);
         vi.mocked(loadAppData).mockResolvedValueOnce({
